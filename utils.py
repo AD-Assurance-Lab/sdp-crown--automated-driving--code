@@ -112,15 +112,15 @@ def load_model_and_dataset(args, device):
     
     # Load dataset
     if "mnist" in args.model.lower():
-        dataset = np.load('./datasets/sdp/mnist/X_sdp.npy')
-        labels = np.load('./datasets/sdp/mnist/y_sdp.npy')
+        dataset = np.load('./datasets/debugging/mnist/X_sdp.npy')
+        labels = np.load('./datasets/debugging/mnist/y_sdp.npy')
         dataset = torch.from_numpy(dataset).permute(0,3,1,2)
         labels = torch.from_numpy(labels)
         range = args.radius
         classes = 10
     elif "cifar10" in args.model.lower():
-        dataset = np.load('./datasets/sdp/cifar/X_sdp.npy')
-        labels = np.load('./datasets/sdp/cifar/y_sdp.npy')
+        dataset = np.load('./datasets/debugging/cifar/X_sdp.npy')
+        labels = np.load('./datasets/debugging/cifar/y_sdp.npy')
         dataset = preprocess_cifar(dataset)
         dataset = torch.from_numpy(dataset).permute(0,3,1,2)
         labels = torch.from_numpy(labels)
