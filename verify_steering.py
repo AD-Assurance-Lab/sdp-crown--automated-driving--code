@@ -32,7 +32,7 @@ CONFIG = {
     "csv_path": "datasets/Udacity/self_driving_car_dataset_jungle/driving_log.csv",
     "img_dir": "datasets/Udacity/self_driving_car_dataset_jungle/IMG/",
     "weights_path": "models_weights/pilotnet_udacity.pth",
-    "output_results": "results/verification_results.json",
+    "output_results": "results/steering_verification/verification_results.json",
     
     # Runtime settings
     "device": "cuda" if torch.cuda.is_available() else "cpu"  # Use "cuda" for speed, "cpu" if you hit OOM

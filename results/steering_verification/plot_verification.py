@@ -4,16 +4,13 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-# ==============================================================================
-# CONTROL PANEL
-# Modify these values to configure the default behavior when running the script
-# directly (e.g. by pressing the "Play" button in VS Code).
-# ==============================================================================
+# Resolve paths relative to this script's directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
 CONFIG = {
-    "results_json": "results/verification_results.json", # Path to verification results JSON
-    "output_png": "results/verification_plot.png"        # Path to save the generated plot image
+    "results_json": os.path.join(script_dir, "verification_results.json"), # Path to verification results JSON
+    "output_png": os.path.join(script_dir, "verification_plot.png")        # Path to save the generated plot image
 }
-# ==============================================================================
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Plot SDP-CROWN Verification Bounds")

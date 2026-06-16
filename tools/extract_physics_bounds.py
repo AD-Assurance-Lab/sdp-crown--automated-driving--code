@@ -10,12 +10,12 @@ import numpy as np
 # directly (e.g. by pressing the "Play" button in VS Code).
 # ==============================================================================
 CONFIG = {
-    "condition": "rain",                   # Options: "fog", "night", "snow", "rain"
+    "condition": "fog",                   # Options: "fog", "night", "snow", "rain"
     "split": "val",                       # Options: "train", "val", "test"
-    "sequence": "GOPR0476",               # Specific folder (e.g., "GOPR0476") for stable ODD calibration
+    "sequence": "GP020475",               # Specific folder (e.g., "GOPR0476") for stable ODD calibration
     "dataset_dir": "datasets/ACDC",       # Path to ACDC dataset root
-    "output_json": "results/physics_bounds.json", # Output JSON path
-    "max_images": 50                      # Aggregating too many images causes bound explosion
+    "output_json": "results/fog_bounds1.json", # Output JSON path
+    "max_images": 10                      # Aggregating too many images causes bound explosion
 }
 # ==============================================================================
 
