@@ -1,0 +1,103 @@
+{
+    "weather": "night",
+    "eps_c_min": -0.5865,
+    "eps_c_max": 0.0,
+    "eps_b_min": -0.1557,
+    "eps_b_max": 0.0,
+    "safe_deviation": 0.1,
+    "total_frames": 10,
+    "safe_frames": 0,
+    "safety_rate": 0.0,
+    "frames": [
+        {
+            "frame_idx": 0,
+            "nominal_steering": -0.011503592133522034,
+            "lower_bound": -1.6884630918502808,
+            "upper_bound": 1.9021663665771484,
+            "lower_corridor": -0.11150359213352204,
+            "upper_corridor": 0.08849640786647797,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 1,
+            "nominal_steering": -0.011136218905448914,
+            "lower_bound": -1.7275750637054443,
+            "upper_bound": 1.9393401145935059,
+            "lower_corridor": -0.11113621890544892,
+            "upper_corridor": 0.08886378109455109,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 2,
+            "nominal_steering": -0.003826722502708435,
+            "lower_bound": -1.688754916191101,
+            "upper_bound": 1.8759346008300781,
+            "lower_corridor": -0.10382672250270844,
+            "upper_corridor": 0.09617327749729157,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 3,
+            "nominal_steering": -0.006181284785270691,
+            "lower_bound": -1.7011020183563232,
+            "upper_bound": 1.8839585781097412,
+            "lower_corridor": -0.1061812847852707,
+            "upper_corridor": 0.09381871521472931,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 4,
+            "nominal_steering": -0.01075880229473114,
+            "lower_bound": -1.758124828338623,
+            "upper_bound": 1.9349448680877686,
+            "lower_corridor": -0.11075880229473115,
+            "upper_corridor": 0.08924119770526887,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 5,
+            "nominal_steering": -0.02498026192188263,
+            "lower_bound": -1.6383172273635864,
+            "upper_bound": 2.1812195777893066,
+            "lower_corridor": -0.12498026192188263,
+            "upper_corridor": 0.07501973807811738,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 6,
+            "nominal_steering": -0.03222869336605072,
+            "lower_bound": -1.5513157844543457,
+            "upper_bound": 2.0734145641326904,
+            "lower_corridor": -0.13222869336605073,
+            "upper_corridor": 0.06777130663394929,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 7,
+            "nominal_steering": -0.03661395609378815,
+            "lower_bound": -1.5599753856658936,
+            "upper_bound": 2.078441619873047,
+            "lower_corridor": -0.13661395609378815,
+            "upper_corridor": 0.06338604390621186,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 8,
+            "nominal_steering": -0.024169057607650757,
+            "lower_bound": -1.6119476556777954,
+            "upper_bound": 2.1792476177215576,
+            "lower_corridor": -0.12416905760765076,
+            "upper_corridor": 0.07583094239234925,
+            "status": "FAILED"
+        },
+        {
+            "frame_idx": 9,
+            "nominal_steering": -0.016780778765678406,
+            "lower_bound": -1.66834557056427,
+            "upper_bound": 2.25179123878479,
+            "lower_corridor": -0.11678077876567841,
+            "upper_corridor": 0.0832192212343216,
+            "status": "FAILED"
+        }
+    ]
+}

@@ -1,0 +1,46 @@
+{
+    "rain": {
+        "total_pairs_evaluated": 1000,
+        "eps_c_min": -0.5875321626663208,
+        "eps_c_max": 0.021071672439575195,
+        "eps_b_min": -0.1635380983352661,
+        "eps_b_max": 0.3058736324310303,
+        "recommended_eps_c_min": -0.5875321626663208,
+        "recommended_eps_c_max": 0.021071672439575195,
+        "recommended_eps_b_min": -0.1635380983352661,
+        "recommended_eps_b_max": 0.3058736324310303
+    },
+    "fog": {
+        "total_pairs_evaluated": 1000,
+        "eps_c_min": -0.7829796075820923,
+        "eps_c_max": -0.39792144298553467,
+        "eps_b_min": 0.26708585023880005,
+        "eps_b_max": 0.5945842862129211,
+        "recommended_eps_c_min": -0.7829796075820923,
+        "recommended_eps_c_max": 0.0,
+        "recommended_eps_b_min": 0.0,
+        "recommended_eps_b_max": 0.5945842862129211
+    },
+    "night": {
+        "total_pairs_evaluated": 1000,
+        "eps_c_min": -0.8879385590553284,
+        "eps_c_max": 0.06011402606964111,
+        "eps_b_min": -0.6082316040992737,
+        "eps_b_max": -0.045433685183525085,
+        "recommended_eps_c_min": -0.8879385590553284,
+        "recommended_eps_c_max": 0.06011402606964111,
+        "recommended_eps_b_min": -0.6082316040992737,
+        "recommended_eps_b_max": 0.0
+    },
+    "snow": {
+        "total_pairs_evaluated": 500,
+        "eps_c_min": -0.3989,
+        "eps_c_max": 0.0,
+        "eps_b_min": 0.0,
+        "eps_b_max": 0.1809,
+        "recommended_eps_c_min": -0.3989,
+        "recommended_eps_c_max": 0.0,
+        "recommended_eps_b_min": 0.0,
+        "recommended_eps_b_max": 0.1809
+    }
+}

@@ -7,132 +7,148 @@ import numpy as np
 # Resolve paths relative to this script's directory
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-CONFIG = {
-    "results_json": os.path.join(script_dir, "verification_results.json"), # Path to verification results JSON
-    "output_png": os.path.join(script_dir, "verification_plot.png")        # Path to save the generated plot image
-}
+# File Paths
+CONSOLIDATED_JSON = os.path.join(script_dir, "verification_results.json")
+OUTPUT_PNG = os.path.join(script_dir, "verification_plot.png")
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Plot SDP-CROWN Verification Bounds")
+def consolidate_files():
+    """Scans the steering_verification folder for individual model/weather json files and combines them."""
+    weathers = ["fog", "night", "rain", "snow"]
+    models = ["clear_only", "mixed_weather", "pilotnet_udacity"]
+    methods = ["CROWN", "SDP"] # CROWN = 10 frames, SDP = 2 frames SDP-CROWN
+    
+    consolidated = {}
+    
+    for model in models:
+        consolidated[model] = {}
+        for weather in weathers:
+            consolidated[model][weather] = {}
+            for method in methods:
+                filename = f"{model}_{weather}_{method}.json"
+                filepath = os.path.join(script_dir, filename)
+                
+                if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                    try:
+                        with open(filepath, "r") as f:
+                            res_data = json.load(f)
+                        method_name = "CROWN" if method == "CROWN" else "SDP-CROWN"
+                        consolidated[model][weather][method_name] = res_data
+                    except Exception as e:
+                        print(f"Warning: Failed to parse {filename}: {e}")
+                else:
+                    # Fallback for checking if they exist under a slightly different name
+                    pass
+                    
+    # Write consolidated JSON
+    with open(CONSOLIDATED_JSON, "w", encoding="utf-8") as f:
+        json.dump(consolidated, f, indent=4)
+    print(f"Consolidated all verification outputs into single file: {CONSOLIDATED_JSON}")
+    return consolidated
+
+def main():
+    parser = argparse.ArgumentParser(description="Plot SDP-CROWN and CROWN Verification Bounds")
     parser.add_argument(
         "--results_json",
-        default=CONFIG["results_json"],
-        help="Path to verification results JSON"
+        default=CONSOLIDATED_JSON,
+        help="Path to consolidated verification results JSON"
     )
     parser.add_argument(
         "--output_png",
-        default=CONFIG["output_png"],
+        default=OUTPUT_PNG,
         help="Path to save the generated plot image"
     )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
+    args = parser.parse_args()
     
-    if not os.path.exists(args.results_json):
-        print(f"Error: Results file not found at {args.results_json}")
-        print("Please run verify_steering.py first to generate the verification data.")
-        return
-
-    with open(args.results_json, "r") as f:
-        data = json.load(f)
-
-    weather = data.get("weather", "Unknown")
-    eps_c_min = data.get("eps_c_min", 0.0)
-    eps_b_max = data.get("eps_b_max", 0.0)
-    safe_deviation = data.get("safe_deviation", 0.1)
-    safety_rate = data.get("safety_rate", 0.0)
-    frames = data.get("frames", [])
-
-    if not frames:
-        print("Error: No frames data found in results JSON.")
-        return
-
-    frame_idxs = [f["frame_idx"] for f in frames]
-    nominal = [f["nominal_steering"] for f in frames]
-    lb = [f["lower_bound"] for f in frames]
-    ub = [f["upper_bound"] for f in frames]
-    corridor_l = [f["lower_corridor"] for f in frames]
-    corridor_u = [f["upper_corridor"] for f in frames]
-    statuses = [f["status"] for f in frames]
-
-    # Set up styling for a clean, professional aesthetic
+    # 1. Consolidate files first
+    data = consolidate_files()
+    
+    # 2. Plotting
+    weathers = ["fog", "night", "rain", "snow"]
+    models = ["clear_only", "mixed_weather", "pilotnet_udacity"]
+    
     plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
-    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=300)
-
-    # Convert to numpy arrays for elementwise calculations
-    frame_idxs = np.array(frame_idxs)
-    nominal = np.array(nominal)
-    lb = np.array(lb)
-    ub = np.array(ub)
-    corridor_l = np.array(corridor_l)
-    corridor_u = np.array(corridor_u)
-
-    # Plot Safety Corridor (Shaded Area around Nominal)
-    ax.fill_between(
-        frame_idxs, corridor_l, corridor_u, 
-        color="#e0f2f1", alpha=0.6, label=f"Safety Corridor (Nominal ±{safe_deviation} rad)"
-    )
+    fig, axs = plt.subplots(2, 2, figsize=(14, 10), dpi=300)
+    axs = axs.ravel()
     
-    # Plot CROWN Bounds as a shaded region (Worst-Case envelope)
-    ax.fill_between(
-        frame_idxs, lb, ub, 
-        color="#ffc107", alpha=0.3, label="CROWN Worst-Case Bounds"
-    )
-
-    # Plot Nominal Steering line
-    ax.plot(frame_idxs, nominal, color="#00796b", linewidth=2.5, linestyle="--", label="Nominal Steering (Clear)")
-
-    # Plot Bound outlines
-    ax.plot(frame_idxs, lb, color="#ffb300", linewidth=1, linestyle="-")
-    ax.plot(frame_idxs, ub, color="#ffb300", linewidth=1, linestyle="-")
-
-    # Mark frames color-coded by safety status
-    safe_mask = np.array([s == "SAFE" for s in statuses])
-    fail_mask = np.array([s == "FAILED" for s in statuses])
-    vacuous_mask = np.array([s == "VACUOUS" for s in statuses])
-
-    if np.any(safe_mask):
-        ax.scatter(
-            frame_idxs[safe_mask], nominal[safe_mask], 
-            color="#2e7d32", s=50, zorder=5, label="Verified Safe Frame"
-        )
-    if np.any(fail_mask):
-        ax.scatter(
-            frame_idxs[fail_mask], nominal[fail_mask], 
-            color="#c62828", s=60, marker="X", zorder=5, label="Safety Violated (Failed)"
-        )
-    if np.any(vacuous_mask):
-        ax.scatter(
-            frame_idxs[vacuous_mask], nominal[vacuous_mask], 
-            color="#757575", s=60, marker="o", facecolors='none', edgecolors='#757575', 
-            zorder=5, label="Vacuous/Exploded Bounds"
-        )
-
-    # Labels and Title
-    ax.set_title(
-        f"SDP-CROWN Steering Verification under {weather.upper()} Perturbation\n"
-        f"Calibrated Constraints: $\epsilon_c \in [{eps_c_min:.4f}, 0]$, $\epsilon_b \in [0, {eps_b_max:.4f}]$ | "
-        f"Certified Robustness: {safety_rate:.1f}%",
-        fontsize=14, fontweight="bold", pad=15
-    )
-    ax.set_xlabel("Time Frame", fontsize=12)
-    ax.set_ylabel("Steering Angle (Radians)", fontsize=12)
+    colors = {
+        "clear_only": {"nominal": "#007acc", "crown": "#66b2ff", "sdp": "#004080"},
+        "mixed_weather": {"nominal": "#228b22", "crown": "#7fdf7f", "sdp": "#006400"},
+        "pilotnet_udacity": {"nominal": "#ff7f0e", "crown": "#ffbb78", "sdp": "#d62728"}
+    }
     
-    ax.set_xlim(frame_idxs[0] - 0.5, frame_idxs[-1] + 0.5)
-    ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="none", shadow=True, fontsize=10)
-    
+    for idx, weather in enumerate(weathers):
+        ax = axs[idx]
+        
+        # Plot safety corridor relative to nominal (which is ±0.1 rad deviation)
+        ax.axhspan(-0.1, 0.1, color='#e2f0d9' if weather != "snow" else '#f2f2f2', alpha=0.4, label='Safety Corridor ($\pm$0.1 rad)')
+        ax.axhline(0, color='black', linestyle='--', linewidth=0.8)
+        
+        for model in models:
+            if model == "clear_only":
+                label_model = "Clear-Only Model"
+            elif model == "mixed_weather":
+                label_model = "Mixed-Weather Model"
+            else:
+                label_model = "MicroPilotNet Model"
+            
+            # A. Plot CROWN (10 frames)
+            if "CROWN" in data[model][weather]:
+                crown_res = data[model][weather]["CROWN"]
+                frames = crown_res.get("frames", [])
+                x = [f["frame_idx"] for f in frames]
+                
+                # Deviations from nominal steering angle
+                lb_dev = [f["lower_bound"] - f["nominal_steering"] for f in frames]
+                ub_dev = [f["upper_bound"] - f["nominal_steering"] for f in frames]
+                
+                # Clip values for cleaner visualization in case of explosion
+                lb_dev_clipped = np.clip(lb_dev, -2.5, 2.5)
+                ub_dev_clipped = np.clip(ub_dev, -2.5, 2.5)
+                
+                ax.fill_between(
+                    x, lb_dev_clipped, ub_dev_clipped, 
+                    color=colors[model]["crown"], alpha=0.25,
+                    label=f"{label_model} (CROWN worst-case)"
+                )
+                
+            # B. Plot SDP-CROWN (2 frames)
+            if "SDP-CROWN" in data[model][weather]:
+                sdp_res = data[model][weather]["SDP-CROWN"]
+                frames = sdp_res.get("frames", [])
+                x_sdp = [f["frame_idx"] for f in frames]
+                
+                lb_dev = [f["lower_bound"] - f["nominal_steering"] for f in frames]
+                ub_dev = [f["upper_bound"] - f["nominal_steering"] for f in frames]
+                
+                lb_dev_clipped = np.clip(lb_dev, -2.5, 2.5)
+                ub_dev_clipped = np.clip(ub_dev, -2.5, 2.5)
+                
+                ax.errorbar(
+                    x_sdp, [0]*len(x_sdp), 
+                    yerr=[[-l for l in lb_dev_clipped], ub_dev_clipped], 
+                    fmt='o', color=colors[model]["sdp"], elinewidth=2.5, capsize=5,
+                    label=f"{label_model} (SDP-CROWN)"
+                )
+                
+        ax.set_title(f"Weather Disturbance: {weather.upper()}", fontsize=13, fontweight='bold', pad=10)
+        ax.set_ylabel("Steering Deviation from Nominal (rad)", fontsize=11)
+        ax.set_ylim(-1.5, 1.5)
+        ax.set_xlim(-0.5, 9.5)
+        ax.set_xticks(range(10))
+        
+        if idx >= 2:
+            ax.set_xlabel("Frame Index", fontsize=11)
+            
+        # Format legends without duplicates
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc='upper right', frameon=True, facecolor='white', framealpha=0.9, fontsize=8)
+        
+    plt.suptitle("E2E Steering Verification under Adverse Weather Constraints\n(Calibrated ACDC Epsilon Envelopes | Safety Corridor = $\pm$0.1 rad)", fontsize=15, fontweight='bold', y=0.98)
     plt.tight_layout()
-
-    # Save the output image
-    output_dir = os.path.dirname(args.output_png)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    plt.savefig(args.output_png, bbox_inches="tight")
+    plt.savefig(args.output_png, bbox_inches="tight", dpi=300)
     plt.close()
-    
-    print(f"Successfully generated verification plot at: {args.output_png}")
+    print(f"Successfully generated verification comparison plot at: {args.output_png}")
 
 if __name__ == "__main__":
     main()

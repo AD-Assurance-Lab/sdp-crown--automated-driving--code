@@ -1,0 +1,59 @@
+================================================================================
+MNIST and CIFAR-10 Safety Verification Backup & Debugging Information
+================================================================================
+
+This file serves as a backup of the discrete classification verification details
+that were previously included in Section IV of the ITSC paper. These results
+can be referenced for debugging or comparing classification vs. regression bounds.
+
+--------------------------------------------------------------------------------
+1. Section IV-E (Information Destruction Analysis) Content
+--------------------------------------------------------------------------------
+To understand the underlying mechanics of environmental failures, we evaluated 
+the verified fog pipeline across 200-sample partitions of both the MNIST and 
+CIFAR-10 datasets using pre-trained MLPs and Convolutional Neural Networks (CNNs). 
+The results highlight a critical vulnerability in standard model architectures.
+
+Models trained on MNIST maintained high certified safety rates, whereas the 
+models trained on CIFAR-10 completely collapsed (0% certified safety). This 
+disparity is driven by mathematical information destruction. MNIST digits possess 
+high spatial frequency and binarized contrast (stark white on pure black); even 
+when the semantic fog mathematically compresses the dynamic range by 16%, the 
+foundational geometric structures survive, allowing the solver's lower-bound 
+logits to remain positive.
+
+Conversely, natural images (like CIFAR-10 or autonomous driving dashcams) rely 
+on low spatial frequency and continuous, subtle color gradients. Compressing 
+the variance (sigma) of these natural distributions causes distinct feature 
+maps to fundamentally overlap, mathematically washing out the data into uniform 
+airlight.
+
+These results yield a crucial insight for autonomous driving safety: standard 
+l_p-norm benchmarks falsely assure safety. A network may demonstrate robust 
+certified safety against random 3% pixel noise, but when subjected to 
+mathematically calibrated, real-world atmospheric weather, the models fail 
+catastrophically. This proves that deep learning policies for Autonomous 
+Vehicles require specialized, physics-informed verification frameworks before 
+they can be trusted in dynamic environments.
+
+--------------------------------------------------------------------------------
+2. Figure Details
+--------------------------------------------------------------------------------
+- Figure Label: fig:fog_results
+- Left Plot: mnist_fog_verification_results.png (Certified safety rates under ACDC fog constraints for MNIST)
+- Right Plot: cifar_fog_verification_results.png (Certified safety rates under ACDC fog constraints for CIFAR-10)
+- Caption: "Certified safety rates under ACDC fog constraints for MNIST (left) and CIFAR-10 (right) baseline architectures."
+
+--------------------------------------------------------------------------------
+3. Code Reference for MNIST/CIFAR Verification
+--------------------------------------------------------------------------------
+The classification verification was executed using the `sdp_crown.py` script:
+  python sdp_crown.py --model mnist_mlp --radius 1.0
+  python sdp_crown.py --model mnist_convsmall --radius 0.3
+  python sdp_crown.py --model mnist_convlarge --radius 0.3
+  python sdp_crown.py --model cifar10_cnn_a --radius 24/255
+  python sdp_crown.py --model cifar10_cnn_b --radius 24/255
+  python sdp_crown.py --model cifar10_cnn_c --radius 24/255
+  python sdp_crown.py --model cifar10_convsmall --radius 24/255
+  python sdp_crown.py --model cifar10_convdeep --radius 24/255
+  python sdp_crown.py --model cifar10_convlarge --radius 8/255

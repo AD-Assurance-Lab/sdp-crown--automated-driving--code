@@ -1,0 +1,31 @@
+{
+    "weather": "rain",
+    "eps_c_min": -0.4337,
+    "eps_c_max": 0.0,
+    "eps_b_min": 0.0,
+    "eps_b_max": 0.1013,
+    "safe_deviation": 0.1,
+    "total_frames": 2,
+    "safe_frames": 2,
+    "safety_rate": 100.0,
+    "frames": [
+        {
+            "frame_idx": 0,
+            "nominal_steering": -0.011503592133522034,
+            "lower_bound": -0.10870646610856056,
+            "upper_bound": 0.046844527870416645,
+            "lower_corridor": -0.11150359213352204,
+            "upper_corridor": 0.08849640786647797,
+            "status": "SAFE"
+        },
+        {
+            "frame_idx": 1,
+            "nominal_steering": -0.011136218905448914,
+            "lower_bound": -0.10742864161729813,
+            "upper_bound": 0.047409897297620775,
+            "lower_corridor": -0.11113621890544892,
+            "upper_corridor": 0.08886378109455109,
+            "status": "SAFE"
+        }
+    ]
+}

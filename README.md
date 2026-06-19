@@ -140,6 +140,62 @@ Or execute individual models:
 
 ---
 
+## 4. Code Implementation Examples
+
+Below are the code snippets illustrating the verifier-friendly `MicroPilotNet` architecture and the continuous verification/garbage collection loop:
+
+### A. MicroPilotNet Architecture
+```python
+class MicroPilotNet(nn.Module):
+    def __init__(self):
+        super(MicroPilotNet, self).__init__()
+        # Input: 3 channels (RGB), 37 height, 117 width
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(3, 24, 5, stride=2), nn.ReLU(),
+            nn.Conv2d(24, 36, 5, stride=2), nn.ReLU(),
+            nn.Conv2d(36, 48, 5, stride=2), nn.ReLU(),
+            nn.Conv2d(48, 64, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1), nn.ReLU()
+        )
+        # Flattened size: 64 channels * 2 height * 12 width = 1536
+        self.linear_layers = nn.Sequential(
+            nn.Linear(1536, 100), nn.ReLU(),
+            nn.Linear(100, 50), nn.ReLU(),
+            nn.Linear(50, 10), nn.ReLU(),
+            nn.Linear(10, 1) # Single regression output
+        )
+
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1) 
+        return self.linear_layers(x)
+```
+
+### B. CROWN/SDP-CROWN Execution and Memory Management Loop
+```python
+# Initialize BoundedModule (use 'conv_mode': 'matrix' for semantic perturbations)
+lirpa_model = BoundedModule(
+    wrapped_model, bounded_eps, device=device, verbose=0, bound_opts={'conv_mode': 'matrix'}
+)
+
+# Compute regression bounds using CROWN
+crown_lb, crown_ub = lirpa_model.compute_bounds(
+    x=(bounded_eps,), method='CROWN', bound_lower=True, bound_upper=True
+)
+
+# Evaluate safety corridor (+/- 0.1 rad deviation)
+is_safe = (crown_lb.item() >= nominal_steering - 0.1) and (crown_ub.item() <= nominal_steering + 0.1)
+
+# Clear computational graph and clear CUDA VRAM cache
+del crown_lb, crown_ub, lirpa_model, wrapped_model, bounded_eps
+import gc
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+```
+
+---
+
 ## References
 
 *   **SDP-CROWN Paper:** [ICML 2025 PDF](https://arxiv.org/pdf/2506.06665)

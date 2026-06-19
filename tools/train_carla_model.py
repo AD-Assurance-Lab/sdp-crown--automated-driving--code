@@ -41,6 +41,9 @@ class CarlaDataset(Dataset):
         # Convert BGR to RGB
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
+        # Crop top 180px and bottom 80px (original size is 480x640)
+        img = img[180:400, :]
+        
         # Resize to CarlaSteeringNet input shape (60 height, 80 width)
         img = cv2.resize(img, (80, 60))
         
@@ -83,7 +86,7 @@ def collect_data_from_csv(root_dir, weather_folders):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Train CarlaSteeringNet on CARLA steering dataset")
-    parser.add_argument("--data-root", default="datasets/carla_testing", help="Root directory of collected CARLA data")
+    parser.add_argument("--data-root", default="datasets/carla_steering_e2e", help="Root directory of collected CARLA data")
     parser.add_argument("--mode", default="clear", choices=["clear", "mixed"], help="Dataset split mode (clear only, or all weather combined)")
     parser.add_argument("--epochs", default=30, type=int, help="Number of training epochs")
     parser.add_argument("--batch-size", default=64, type=int, help="Batch size")

@@ -36,7 +36,9 @@ def parse_args():
     parser.add_argument("--num-frames", default=5000, type=int, help="Number of frames to collect")
     parser.add_argument("--width", default=640, type=int, help="Image width")
     parser.add_argument("--height", default=480, type=int, help="Image height")
-    parser.add_argument("--output-dir", default="datasets/carla_testing", help="Root directory for saving collected datasets")
+    parser.add_argument("--output-dir", default="datasets/carla_steering_e2e", help="Root directory for saving collected datasets")
+    parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
+    parser.add_argument("--spawn-point-idx", default=12, type=int, help="Index of spawn point for the ego vehicle")
     return parser.parse_args()
 
 def set_weather(world, profile):
@@ -93,6 +95,10 @@ def sensor_callback(image, image_queue):
 def main():
     args = parse_args()
     
+    # Set seeds for reproducibility
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    
     # Establish subdirectories
     save_dir = os.path.join(args.output_dir, args.weather)
     img_dir = os.path.join(save_dir, "images")
@@ -101,14 +107,14 @@ def main():
     csv_path = os.path.join(save_dir, "index.csv")
     csv_file = open(csv_path, mode='w', newline='')
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(["frame", "image_path", "steering", "throttle", "brake", "speed"])
+    csv_writer.writerow(["frame", "image_path", "steering", "throttle", "brake", "speed_mph", "x", "y"])
 
     actor_list = []
     client = carla.Client(args.host, args.port)
     client.set_timeout(20.0)
     
     try:
-        # Load map
+        # Load map (always reload to ensure a clean slate and delete previous actors)
         print(f"Loading map {args.map}...")
         world = client.load_world(args.map)
         
@@ -125,22 +131,38 @@ def main():
         
         blueprint_library = world.get_blueprint_library()
         
-        # Spawn ego vehicle
+        # Spawn ego vehicle deterministically
         vehicle_bp = blueprint_library.filter('vehicle.tesla.model3')[0]
         spawn_points = world.get_map().get_spawn_points()
-        spawn_point = random.choice(spawn_points) if spawn_points else carla.Transform()
+        if not spawn_points:
+            spawn_point = carla.Transform()
+            print("Warning: No spawn points found on map. Using default Transform.")
+        else:
+            spawn_point_idx = args.spawn_point_idx % len(spawn_points)
+            spawn_point = spawn_points[spawn_point_idx]
+            # Add safety z-offset to prevent clipping into the road collider
+            spawn_point.location.z += 0.5
+            print(f"Selected spawn point index {spawn_point_idx} (out of {len(spawn_points)}) at location {spawn_point.location}")
         
         ego_vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         actor_list.append(ego_vehicle)
         print(f"Spawned ego vehicle: {ego_vehicle.type_id}")
         
-        # Set autopilot
-        ego_vehicle.set_autopilot(True)
-        # Configure autopilot speed limit
+        # Configure Traffic Manager
         traffic_manager = client.get_trafficmanager()
-        traffic_manager.set_global_distance_to_leading_vehicle(2.5)
-        traffic_manager.global_percentage_speed_difference(30.0)  # Moderate speed
         traffic_manager.set_synchronous_mode(True)
+        traffic_manager.set_random_device_seed(args.seed)
+        traffic_manager.set_global_distance_to_leading_vehicle(2.5)
+        
+        # Target speed: constant 10 mph. 
+        # Map speed limit is 30 km/h. To get 10 mph (16 km/h), set percentage difference to 46.6% below.
+        traffic_manager.vehicle_percentage_speed_difference(ego_vehicle, 46.6)
+        
+        # Set autopilot
+        ego_vehicle.set_autopilot(True, traffic_manager.get_port())
+        traffic_manager.ignore_lights_percentage(ego_vehicle, 100.0)
+        traffic_manager.ignore_signs_percentage(ego_vehicle, 100.0)
+        print(f"Autopilot registered on port {traffic_manager.get_port()}. Speed limited to 10 mph (16 km/h), ignoring lights.")
         
         # Spawn front camera
         camera_bp = blueprint_library.find('sensor.camera.rgb')
@@ -158,11 +180,28 @@ def main():
         image_queue = queue.Queue()
         camera.listen(lambda img: sensor_callback(img, image_queue))
         
+        # Get spectator actor to track vehicle position
+        spectator = world.get_spectator()
+        
         # Warmup ticks to stabilize vehicle and auto-exposure
         print("Warming up auto-exposure and vehicle stabilization...")
         for _ in range(30):
+            try:
+                # Direct velocity override (10 mph = 4.4704 m/s)
+                transform = ego_vehicle.get_transform()
+                forward_vec = transform.get_forward_vector()
+                ego_vehicle.set_target_velocity(forward_vec * 4.4704)
+            except Exception:
+                pass
             world.tick()
             try:
+                # Update spectator to follow the ego vehicle
+                transform = ego_vehicle.get_transform()
+                forward_vec = transform.get_forward_vector()
+                spectator_loc = transform.location - 6.0 * forward_vec + carla.Location(z=3.5)
+                spectator_rot = carla.Rotation(pitch=-15.0, yaw=transform.rotation.yaw, roll=0.0)
+                spectator.set_transform(carla.Transform(spectator_loc, spectator_rot))
+                
                 image_queue.get(timeout=1.0)
             except queue.Empty:
                 pass
@@ -172,8 +211,25 @@ def main():
         collected_frames = 0
         
         while collected_frames < args.num_frames:
+            try:
+                # Direct velocity override (10 mph = 4.4704 m/s)
+                transform = ego_vehicle.get_transform()
+                forward_vec = transform.get_forward_vector()
+                ego_vehicle.set_target_velocity(forward_vec * 4.4704)
+            except Exception:
+                pass
             world.tick()
             
+            # Update spectator to follow the ego vehicle
+            try:
+                transform = ego_vehicle.get_transform()
+                forward_vec = transform.get_forward_vector()
+                spectator_loc = transform.location - 6.0 * forward_vec + carla.Location(z=3.5)
+                spectator_rot = carla.Rotation(pitch=-15.0, yaw=transform.rotation.yaw, roll=0.0)
+                spectator.set_transform(carla.Transform(spectator_loc, spectator_rot))
+            except Exception:
+                pass
+                
             try:
                 # Synchronously retrieve image from queue
                 image = image_queue.get(timeout=2.0)
@@ -181,34 +237,37 @@ def main():
                 print("Warning: Timed out waiting for camera frame.")
                 continue
                 
-            # Retrieve vehicle physics states
-            control = ego_vehicle.get_control()
+            # 1. Retrieve the steering and speed from autopilot
+            ap_control = ego_vehicle.get_control()
             velocity = ego_vehicle.get_velocity()
-            speed = 3.6 * np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)  # km/h
+            speed_mph = 2.23694 * np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
             
-            # Format raw pixels to numpy RGB array
+            # Format raw pixels to numpy array.
+            # CARLA camera outputs BGRA format, so the first 3 channels are BGR.
             array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
             array = np.reshape(array, (image.height, image.width, 4))
-            rgb_image = array[:, :, :3]
+            bgr_image = array[:, :, :3]
             
             # Save frame to disk
             img_name = f"frame_{collected_frames:06d}.png"
             img_path = os.path.join(img_dir, img_name)
             
-            # Convert RGB to BGR for OpenCV saving
-            bgr_image = rgb_image[:, :, ::-1]
+            # cv2.imwrite expects BGR, so save directly without channel swapping
             cv2_saved = cv2.imwrite(img_path, bgr_image)
             
             if cv2_saved:
                 # Log metadata
+                loc = ego_vehicle.get_location()
                 relative_img_path = os.path.join("images", img_name)
                 csv_writer.writerow([
                     collected_frames,
                     relative_img_path,
-                    control.steer,
-                    control.throttle,
-                    control.brake,
-                    speed
+                    ap_control.steer,
+                    ap_control.throttle,
+                    ap_control.brake,
+                    speed_mph,
+                    loc.x,
+                    loc.y
                 ])
                 
                 collected_frames += 1
@@ -225,10 +284,30 @@ def main():
         print("Cleaning up simulation actors...")
         csv_file.close()
         
-        # Destroy all spawned actors
-        for actor in actor_list:
-            if actor is not None and actor.is_alive:
-                actor.destroy()
+        # Disable autopilot on vehicle first to unregister it from Traffic Manager
+        if 'ego_vehicle' in locals() and ego_vehicle is not None:
+            try:
+                ego_vehicle.set_autopilot(False)
+            except Exception:
+                pass
+
+        # Stop and destroy camera sensor first to prevent background thread callbacks
+        if 'camera' in locals() and camera is not None:
+            try:
+                camera.stop()
+            except Exception:
+                pass
+            try:
+                camera.destroy()
+            except Exception:
+                pass
+                
+        # Destroy ego vehicle second
+        if 'ego_vehicle' in locals() and ego_vehicle is not None:
+            try:
+                ego_vehicle.destroy()
+            except Exception:
+                pass
         
         # Revert sync settings
         try:
