@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 
 # Add parent directory to path so we can import models.py
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models import CarlaSteeringNet
+from models import CarlaSteeringNet, CarlaSteeringExpertNet
 
 try:
     import cv2
@@ -20,12 +20,13 @@ except ImportError:
     sys.exit(1)
 
 class CarlaDataset(Dataset):
-    def __init__(self, data_list, transform=None):
+    def __init__(self, data_list, is_training=False, weather_aug=False):
         """
         data_list: List of tuples (image_absolute_path, steering_angle)
         """
         self.data_list = data_list
-        self.transform = transform
+        self.is_training = is_training
+        self.weather_aug = weather_aug
 
     def __len__(self):
         return len(self.data_list)
@@ -41,22 +42,79 @@ class CarlaDataset(Dataset):
         # Convert BGR to RGB
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
+        # Data Augmentation during training
+        if self.is_training:
+            # 1. Random horizontal translation (shift) and steering correction
+            if np.random.rand() > 0.3:
+                dx = int(np.random.uniform(-20, 20))
+                # Shift matrix
+                M = np.float32([[1, 0, dx], [0, 1, 0]])
+                img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+                # positive dx -> shift right (drifted left) -> steer right (positive steer correction)
+                steer = steer + dx * 0.003
+                
+            # 2. Random horizontal flip
+            if np.random.rand() > 0.5:
+                img = cv2.flip(img, 1)
+                steer = -steer
+            
         # Crop top 180px and bottom 80px (original size is 480x640)
         img = img[180:400, :]
         
-        # Resize to CarlaSteeringNet input shape (60 height, 80 width)
+        # Resize to CarlaSteeringExpertNet input shape (60 height, 80 width)
         img = cv2.resize(img, (80, 60))
         
         # Normalize to [0.0, 1.0] and convert to float32
         img = img.astype(np.float32) / 255.0
+        
+        # Apply weather augmentation if requested and during training, specifically to clear-weather frames
+        if self.weather_aug and self.is_training:
+            # We check if "clear" is in the image path to only augment clear-weather frames
+            # (which contains the curve and recovery frames).
+            # This avoids double-perturbing images that are already from rain, fog, or night folders.
+            if "clear" in img_path:
+                cond = np.random.choice(["clear", "rain", "fog", "night", "snow"])
+                if cond != "clear":
+                    if cond == "rain":
+                        eps_c = np.random.uniform(-0.4337, 0.0)
+                        eps_b = np.random.uniform(0.0, 0.1013)
+                        use_mask = True
+                    elif cond == "fog":
+                        eps_c = np.random.uniform(-0.1504, 0.0)
+                        eps_b = np.random.uniform(0.0, 0.1145)
+                        use_mask = False
+                    elif cond == "night":
+                        eps_c = np.random.uniform(-0.5865, 0.0)
+                        eps_b = np.random.uniform(-0.1557, 0.0)
+                        use_mask = False
+                    elif cond == "snow":
+                        eps_c = np.random.uniform(-0.3989, 0.0)
+                        eps_b = np.random.uniform(0.0, 0.1809)
+                        use_mask = True
+                    
+                    h, w, c_dim = img.shape
+                    mask = np.zeros((h, w, 1), dtype=np.float32)
+                    if use_mask:
+                        mask[h//2:, :, :] = 1.0
+                    else:
+                        mask[:, :, :] = 1.0
+                    
+                    img = img * (1.0 + eps_c * mask) + eps_b * mask
+                    img = np.clip(img, 0.0, 1.0)
         
         # Permute to (Channels, Height, Width)
         img_tensor = torch.from_numpy(img).permute(2, 0, 1)
         
         return img_tensor, torch.tensor([steer], dtype=torch.float32)
 
-def collect_data_from_csv(root_dir, weather_folders):
+def collect_data_from_csv(root_dir, weather_folders, balance_dataset=True):
     data_list = []
+    
+    left_samples = []
+    right_samples = []
+    straight_samples = []
+    
+    import random
     
     for weather in weather_folders:
         folder_path = os.path.join(root_dir, weather)
@@ -76,11 +134,38 @@ def collect_data_from_csv(root_dir, weather_folders):
             steer = row['steering']
             
             if os.path.exists(img_abs_path):
-                data_list.append((img_abs_path, steer))
+                # Steering categorization (0.01 threshold)
+                if steer < -0.01:
+                    left_samples.append((img_abs_path, steer))
+                elif steer > 0.01:
+                    right_samples.append((img_abs_path, steer))
+                else:
+                    straight_samples.append((img_abs_path, steer))
             else:
                 print(f"Warning: Image file not found at {img_abs_path}")
                 
-    print(f"Total valid image samples aggregated: {len(data_list)}")
+    n_left = len(left_samples)
+    n_right = len(right_samples)
+    n_straight = len(straight_samples)
+    print(f"Raw counts - Left: {n_left} | Right: {n_right} | Straight: {n_straight}")
+    
+    if balance_dataset and n_left > 0 and n_right > 0:
+        # Balance dataset by downsampling straight frames
+        # We target a count equal to 1.5 times the maximum of left and right counts
+        target_straight = int(0.6 * max(n_left, n_right))
+        if n_straight > target_straight:
+            random.seed(42) # Set seed for deterministic downsampling
+            sampled_straight = random.sample(straight_samples, target_straight)
+            print(f"Downsampling straight frames from {n_straight} to {target_straight}")
+            straight_samples = sampled_straight
+            
+    data_list = left_samples + right_samples + straight_samples
+    
+    # Shuffle the final aggregated list
+    random.seed(42)
+    random.shuffle(data_list)
+    
+    print(f"Total valid image samples aggregated (balanced={balance_dataset}): {len(data_list)}")
     return data_list
 
 def main():
@@ -93,6 +178,8 @@ def main():
     parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate")
     parser.add_argument("--val-split", default=0.2, type=float, help="Validation split ratio")
     parser.add_argument("--save-dir", default="models", help="Directory for saving model checkpoints")
+    parser.add_argument("--model-type", default="CarlaSteeringExpertNet", choices=["CarlaSteeringNet", "CarlaSteeringExpertNet"], help="Model architecture type")
+    parser.add_argument("--weather-aug", action="store_true", help="Enable dynamic weather data augmentation during training")
     args = parser.parse_args()
 
     # Determine weather folders to aggregate
@@ -112,8 +199,8 @@ def main():
     print(f"Training samples: {len(train_data)} | Validation samples: {len(val_data)}")
     
     # Initialize Datasets and Loaders
-    train_dataset = CarlaDataset(train_data)
-    val_dataset = CarlaDataset(val_data)
+    train_dataset = CarlaDataset(train_data, is_training=True, weather_aug=args.weather_aug)
+    val_dataset = CarlaDataset(val_data, is_training=False, weather_aug=False)
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
@@ -123,13 +210,22 @@ def main():
     print(f"Using execution device: {device}")
     
     # Initialize model
-    model = CarlaSteeringNet().to(device)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    if args.model_type == "CarlaSteeringNet":
+        model = CarlaSteeringNet().to(device)
+        arch_name = "small"
+    else:
+        model = CarlaSteeringExpertNet().to(device)
+        arch_name = "expert"
+        
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     # Create models directory if it doesn't exist
     os.makedirs(args.save_dir, exist_ok=True)
-    save_filename = f"carla_steering_net_{args.mode}.pth"
+    if args.weather_aug:
+        save_filename = f"carla_{arch_name}_{args.mode}_aug.pth"
+    else:
+        save_filename = f"carla_{arch_name}_{args.mode}.pth"
     save_path = os.path.join(args.save_dir, save_filename)
     
     best_val_loss = float('inf')
@@ -145,7 +241,8 @@ def main():
             
             optimizer.zero_grad()
             outputs = model(images)
-            loss = criterion(outputs, targets)
+            # Standard MSE loss
+            loss = torch.mean((outputs - targets) ** 2)
             loss.backward()
             optimizer.step()
             
@@ -161,10 +258,11 @@ def main():
                 images = images.to(device)
                 targets = targets.to(device)
                 outputs = model(images)
-                loss = criterion(outputs, targets)
+                loss = torch.mean((outputs - targets) ** 2)
                 val_loss += loss.item() * images.size(0)
                 
         val_loss /= len(val_dataset)
+        scheduler.step()
         
         print(f"Epoch {epoch+1:02d}/{args.epochs:02d} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
         

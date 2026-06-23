@@ -1,0 +1,31 @@
+{
+    "weather": "snow",
+    "eps_c_min": -0.3989,
+    "eps_c_max": 0.0,
+    "eps_b_min": 0.0,
+    "eps_b_max": 0.1809,
+    "safe_deviation": 0.1,
+    "total_frames": 2,
+    "safe_frames": 2,
+    "safety_rate": 100.0,
+    "frames": [
+        {
+            "frame_idx": 0,
+            "nominal_steering": -0.004688039422035217,
+            "lower_bound": -0.03361236192286014,
+            "upper_bound": 0.029063188657164576,
+            "lower_corridor": -0.10468803942203522,
+            "upper_corridor": 0.09531196057796479,
+            "status": "SAFE"
+        },
+        {
+            "frame_idx": 1,
+            "nominal_steering": 3.2633543014526367e-06,
+            "lower_bound": -0.03006473369896412,
+            "upper_bound": 0.03190404735505581,
+            "lower_corridor": -0.09999673664569855,
+            "upper_corridor": 0.10000326335430146,
+            "status": "SAFE"
+        }
+    ]
+}

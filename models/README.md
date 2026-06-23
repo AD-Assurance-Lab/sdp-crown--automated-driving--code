@@ -1,95 +1,59 @@
-# Trained AI Models & Verification Procedures
+# Trained E2E CARLA Driving Models
 
-This directory houses the neural network weight checkpoints used for behavioral cloning and safety verification, along with documentation for testing them.
-
----
-
-## 1. Model Architectures
-
-We utilize two primary regression networks for end-to-end steering control:
-
-### CarlaSteeringNet
-*   **Architecture:** 3 Convolutional layers followed by 3 Fully-Connected layers with ReLU activations.
-*   **Input Shape:** $3 \times 60 \times 80$ RGB image (preserves 4:3 aspect ratio).
-*   **Output:** 1D regression output representing the steering control angle in range `[-1.0, 1.0]`.
-*   **Design Rationale:** Designed specifically as a lightweight, verifier-friendly architecture. Verification scale is bounded by network parameter size; keeping the network under 5,000 ReLUs allows Semidefinite Programming (SDP) and CROWN bound propagation to run efficiently without running out of memory.
-
-### MicroPilotNet (Reference/Debugging)
-*   **Architecture:** 5 Convolutional layers followed by 4 Fully-Connected layers with ReLU activations.
-*   **Input Shape:** $3 \times 37 \times 117$ RGB image (NVIDIA's cropped lane aspect ratio).
-*   **Output:** 1D regression output representing the steering control angle in radians.
+This directory contains the neural network weights for the end-to-end steering models trained on CARLA Town04, along with documentation of active checkpoints. All classification (MNIST/CIFAR) and reference (Udacity) models have been archived.
 
 ---
 
-## 2. Model Checkpoints
+## 1. Active Checkpoints
 
-The weight files stored in this folder are:
+We maintain weights for two model architectures:
+*   **CarlaSteeringNet (`small`)**: Lightweight, verifier-friendly architecture. Features 4 Convolutional layers (no BatchNorm) followed by 3 Fully-Connected layers (no Dropout). It is designed to be highly verifiable without bounds explosion under CROWN and SDP-CROWN. It is trained using DAgger-Lite and weather augmentation on $120 \times 90$ image inputs.
+*   **CarlaSteeringExpertNet (`expert`)**: High-capacity architecture. Features 4 Convolutional layers with Batch Normalization followed by 3 Fully-Connected layers with Dropout. It achieves excellent closed-loop driving stability but is computationally heavy for verification. To verify, BatchNorm layers must be fused into preceding Conv layers at eval/verification time.
 
-| Filename | Dataset | Purpose | Loss (Val MSE) |
-| :--- | :--- | :--- | :--- |
-| `carla_steering_net_clear.pth` | CARLA (Clear weather only) | Primary closed-loop lane following | `0.001218` |
-| `carla_steering_net_mixed.pth` | CARLA (Clear, rain, fog, night) | Weather-resilient lane following | `0.004662` |
-| `pilotnet_udacity.pth` | Udacity Lake/Jungle Track | Reference benchmark for offline verification | - |
-| `mnist_*.pth` | MNIST | Classifier verification debugging | - |
-| `cifar10_*.pth` | CIFAR-10 | Classifier verification debugging | - |
+The active weights files in this folder are:
+
+| Filename | Architecture | Training Paradigm | Training Dataset | Purpose / Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `carla_expert_clear.pth` | `CarlaSteeringExpertNet` | DAgger-Lite | Clear Weather | Baseline expert model |
+| `carla_expert_mixed.pth` | `CarlaSteeringExpertNet` | DAgger-Lite | Mixed Weather | Multi-weather robust expert model |
+| `carla_small_clear.pth` | `CarlaSteeringNet` | DAgger-Lite | Clear Weather | Verifier-friendly clear baseline model |
+| `carla_small_mixed.pth` | `CarlaSteeringNet` | DAgger-Lite | Mixed Weather | Verifier-friendly mixed baseline model |
+| `carla_small_mixed_aug.pth` | `CarlaSteeringNet` | DAgger-Lite + Weather Aug | Clear + Weather Aug | Augmented mixed model to solve straight bias |
 
 ---
 
-## 3. Closed-Loop Evaluation in CARLA
+## 2. Model Naming Convention & Registry
+To maintain diligent record-keeping, all trained CARLA models saved in `models/` must follow this naming scheme:
+*   `carla_[architecture]_[weather]_[suffix].pth`
+*   Where `[architecture]` is either `small` (lightweight `CarlaSteeringNet`) or `expert` (high-capacity `CarlaSteeringExpertNet`).
+*   Where `[weather]` is either `clear` (trained on clear weather only) or `mixed` (trained on mixed-weather conditions).
+*   Where `[suffix]` is optional (e.g., `aug` for weather augmentation, `kd` for knowledge distillation).
+*   *Example:* `carla_small_clear.pth`, `carla_small_mixed_aug.pth`.
+*   All old/deprecated models (MNIST, CIFAR, Udacity) must reside in `models/archive/`.
 
-To verify that the trained controllers are valid and capable of keeping the vehicle within its lane, we run closed-loop testing in the CARLA simulator.
+---
 
-### Evaluation Protocol
-*   The simulator is run in **synchronous mode** at 10 Hz.
-*   The ego vehicle is spawned at **spawn point index 0** on `Town01`.
-*   At each tick, the front hood camera frame is captured, resized to $80 \times 60$, normalized, and fed to `CarlaSteeringNet`.
-*   The model-predicted steering command is applied to the vehicle.
-*   Throttle and brake are controlled by the Traffic Manager to maintain a safe speed profile, while the vehicle is steered entirely by the model.
-*   The script logs predicted steering versus nominal autopilot steering, generating a validation performance plot.
+## 3. Evaluation and Verification Usage
 
-### Running the Evaluation
-To evaluate the **clear-weather model** under clear weather:
+### Closed-Loop Driving Simulator Evaluation:
+To evaluate model steering stability in CARLA:
 ```bash
 ./venv_sdp/bin/python tools/test_carla_model.py \
-    --model-path models/carla_steering_net_clear.pth \
-    --weather clear \
-    --num-frames 1000 \
-    --save-plot results/carla_closed_loop_clear.png \
-    --save-csv results/carla_closed_loop_clear.csv
-```
-
-To evaluate the **mixed-weather model** under rain weather:
-```bash
-./venv_sdp/bin/python tools/test_carla_model.py \
-    --model-path models/carla_steering_net_mixed.pth \
+    --model-type CarlaSteeringNet \
+    --model-path models/carla_small_mixed_aug.pth \
     --weather rain \
-    --num-frames 1000 \
-    --save-plot results/carla_closed_loop_mixed_rain.png \
-    --save-csv results/carla_closed_loop_mixed_rain.csv
+    --num-frames 200 \
+    --start-frame 750
 ```
 
----
-
-## 4. Offline CROWN Mathematical Verification
-
-Formal safety verification is conducted offline by bounding steering deviations under parameterized semantic weather perturbations.
-
-### Verification Protocol
-*   Using `auto_LiRPA`, we compile the model into a bounded computational graph.
-*   We inject a **Semantic Perturbation Layer** representing adverse weather conditions (modeled as contrast drop $\epsilon_c$ and brightness bias $\epsilon_b$ bounds).
-*   The verifier computes the worst-case output steering bounds $[\theta_{\min}, \theta_{\max}]$ for each frame.
-*   If the bounds stay within a safety corridor of $\pm 0.1$ radians around the nominal clear steering path, the frame is certified **SAFE**.
-
-### Running the Verifier
-To run mathematical verification for a weather condition using paper-calibrated bounds:
+### Offline Formal Bounds Verification:
+To verify mathematical safety bounds under parameterized ACDC weather perturbations:
 ```bash
 ./venv_sdp/bin/python verify_steering.py \
+    --model_type CarlaSteeringNet \
+    --weights_path models/carla_small_mixed_aug.pth \
     --weather rain \
-    --eps_c_min -0.0279 \
-    --eps_c_max 0.0 \
-    --eps_b_min 0.0 \
-    --eps_b_max 0.1003 \
-    --num_frames 50 \
-    --device cpu
+    --method SDP-CROWN \
+    --device cuda \
+    --num_frames 50
 ```
-*Note: Using `--device cpu` is recommended to avoid GPU memory limitations during dense matrix bounds propagation.*

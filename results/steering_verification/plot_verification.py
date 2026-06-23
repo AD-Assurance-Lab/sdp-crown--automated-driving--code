@@ -9,7 +9,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # File Paths
 CONSOLIDATED_JSON = os.path.join(script_dir, "verification_results.json")
-OUTPUT_PNG = os.path.join(script_dir, "verification_plot.png")
+OUTPUT_PNG = os.path.join(script_dir, "carla_steering_verification_results.png")
 
 def consolidate_files():
     """Scans the steering_verification folder for individual model/weather json files and combines them."""
@@ -25,7 +25,10 @@ def consolidate_files():
             consolidated[model][weather] = {}
             for method in methods:
                 filename = f"{model}_{weather}_{method}.json"
-                filepath = os.path.join(script_dir, filename)
+                if model == "pilotnet_udacity":
+                    filepath = os.path.join(script_dir, "debugging", filename)
+                else:
+                    filepath = os.path.join(script_dir, "json", filename)
                 
                 if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
                     try:
@@ -35,9 +38,6 @@ def consolidate_files():
                         consolidated[model][weather][method_name] = res_data
                     except Exception as e:
                         print(f"Warning: Failed to parse {filename}: {e}")
-                else:
-                    # Fallback for checking if they exist under a slightly different name
-                    pass
                     
     # Write consolidated JSON
     with open(CONSOLIDATED_JSON, "w", encoding="utf-8") as f:
@@ -64,7 +64,7 @@ def main():
     
     # 2. Plotting
     weathers = ["fog", "night", "rain", "snow"]
-    models = ["clear_only", "mixed_weather", "pilotnet_udacity"]
+    models = ["clear_only", "mixed_weather"]
     
     plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
     fig, axs = plt.subplots(2, 2, figsize=(14, 10), dpi=300)
@@ -72,8 +72,7 @@ def main():
     
     colors = {
         "clear_only": {"nominal": "#007acc", "crown": "#66b2ff", "sdp": "#004080"},
-        "mixed_weather": {"nominal": "#228b22", "crown": "#7fdf7f", "sdp": "#006400"},
-        "pilotnet_udacity": {"nominal": "#ff7f0e", "crown": "#ffbb78", "sdp": "#d62728"}
+        "mixed_weather": {"nominal": "#228b22", "crown": "#7fdf7f", "sdp": "#006400"}
     }
     
     for idx, weather in enumerate(weathers):
@@ -86,10 +85,8 @@ def main():
         for model in models:
             if model == "clear_only":
                 label_model = "Clear-Only Model"
-            elif model == "mixed_weather":
-                label_model = "Mixed-Weather Model"
             else:
-                label_model = "MicroPilotNet Model"
+                label_model = "Mixed-Weather Model"
             
             # A. Plot CROWN (10 frames)
             if "CROWN" in data[model][weather]:
@@ -132,7 +129,13 @@ def main():
                 
         ax.set_title(f"Weather Disturbance: {weather.upper()}", fontsize=13, fontweight='bold', pad=10)
         ax.set_ylabel("Steering Deviation from Nominal (rad)", fontsize=11)
-        ax.set_ylim(-1.5, 1.5)
+        
+        # Scale Y axis with data: tight scaling for non-exploding conditions, wider scaling for night
+        if weather == "night":
+            ax.set_ylim(-2.0, 2.0)
+        else:
+            ax.set_ylim(-0.15, 0.15)
+            
         ax.set_xlim(-0.5, 9.5)
         ax.set_xticks(range(10))
         

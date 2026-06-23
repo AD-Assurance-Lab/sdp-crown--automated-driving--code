@@ -1,203 +1,91 @@
-# SDP-CROWN: Neural Network Verification for Automated Driving
+# SDP-CROWN: Autonomous Steering Robustness Verification & Validation
 
-This repository extends the **SDP-CROWN** (Semidefinite Programming based CROWN) neural network verifier to safety-critical autonomous driving regression tasks. Specifically, it enables physical perturbation verification for end-to-end steering controllers (like NVIDIA's PilotNet) under adverse weather conditions (fog, night, snow, rain).
+This repository extends the **SDP-CROWN** (Semidefinite Programming based CROWN) formal neural network verifier to safety-critical autonomous driving regression tasks. Specifically, it enables physical perturbation verification and closed-loop validation for end-to-end steering controllers (`CarlaSteeringNet`) under adverse weather conditions (rain, fog, night, snow).
 
-The physical perturbations are modeled as parameterized **Semantic Perturbation Layers** (controlling contrast scaling $\epsilon_c$ and brightness bias $\epsilon_b$), calibrated directly from real-world GPS-synchronized clear vs. adverse weather driving scenes in the **ACDC dataset**.
+Semantic weather perturbations are modeled as parameterized **Semantic Perturbation Layers** (controlling contrast scaling $\epsilon_c$ and brightness bias $\epsilon_b$), calibrated directly from real-world GPS-synchronized driving scenes in the **ACDC dataset**.
 
 ---
 
-## 1. Quickstart & Walkthrough
+## 🎯 Active Project Objective: Safe Closed-Loop & Formal Verification
+Our goal is to train a single, verifier-friendly end-to-end steering controller that simultaneously:
+1.  **Passes closed-loop simulator validation** (driving at least a full half-lap on the Town04 highway without lane departures).
+2.  **Formally certifies safe steering bounds** under worst-case weather perturbations using **SDP-CROWN** (steering output deviation $\le \pm 0.1$ radians).
 
-Here is a step-by-step guide to running the automated driving verification pipeline.
+---
 
-### Step 1: Activate the Python Environment
-The pipeline relies on PyTorch, auto_LiRPA, OpenCV, and Pandas. You can run all scripts using the pre-configured virtual environment:
+## 🛑 Coding Constraints & Controller Specifications
+To balance verifiability and closed-loop control stability, all verifier-friendly controllers must adhere to these specifications:
+*   **Architecture (`CarlaSteeringNet`)**: Features 4 Convolutional layers followed by 3 Fully-Connected layers.
+*   **No Dropout, No BatchNorm**: These layers introduce interval bounds explosion or verification stochasticity. Fusing BatchNorm is allowed for expert baseline models, but verifier-friendly networks must omit them natively.
+*   **Resolution & Input Prep**: Inputs are $120 \times 90$ pixels (or $160 \times 120$ for high-detail tests), cropped to remove the sky and hood, and normalized to `[0.0, 1.0]`.
+*   **No Steering Multiplier**: Steering angle predictions map directly to CARLA control inputs without steering gain multipliers.
+
+---
+
+## 🧪 Data Collection & DAgger-Lite Protocol
+To solve the covariate shift problem (compounding errors causing off-road drift) while keeping scene entropy low:
+1.  **Map & Lane Trajectory**: Both data collection and closed-loop testing must always be run in **CARLA Town04 (Epic Mode)**. The ego vehicle drives in the **second-to-left lane** of the highway.
+2.  **Longitudinal Speed**: The ego vehicle's longitudinal speed must be strictly fixed at **20 mph** always (8.94 m/s target using Traffic Manager or PID throttle/brake control) across all data collection, DAgger recovery, and closed-loop testing to remove velocity as a variable.
+3.  **Entropy Reduction (2 x Half Laps)**: We collect exactly **2 x half laps** of data (Stage 1 CW loop around East curve, spawning at `x=-357.1, y=30.0, z=0.5, yaw=0.0`; and Stage 2 CCW loop around West curve, spawning at `x=-396.8, y=12.8, z=0.5, yaw=180.0`), collected sequentially in a single run. Urban intersections and bridges are excluded to keep background scene complexity low.
+4.  **DAgger-Lite Loop**: Interactive rollouts are run where the policy drives, a background autopilot calculates recovery steering corrections, and recovery frames are aggregated back into the training dataset.
+5.  **Turn Balancing**: Autopilot straight-driving frames ($|\text{steer}| \le 0.01$) are downsampled during dataset collection to:
+    $$\text{Target Straight} = 0.6 \times \max(N_{left}, N_{right})$$
+6.  **Required Frame Volumes**:
+    *   **Clear-Weather Model**: 5,000+ balanced training frames.
+    *   **Mixed-Weather Model**: 30,000+ balanced training frames. (Collect clear DAgger-Lite data, then supplement by repeating collection in CARLA Fog, Rain, and Night).
+
+---
+
+## 🛠️ The Verification Engine: Patches-Mode SDP-CROWN
+Custom elementwise weather layers trigger stride-2 `RuntimeError`s in auto_LiRPA's memory-efficient `'patches'` mode.
+*   **The Solution**: We reformulate the weather perturbation layer as a standard **Linear Layer** (`nn.Linear`) mapping the 2D perturbation parameters $[\epsilon_c, \epsilon_b]$ to the flattened $14,400$ image pixels:
+    $$\text{Weight} = \begin{bmatrix} x_0 \odot M & M \end{bmatrix}, \quad \text{Bias} = x_0$$
+    where $x_0$ is the nominal image and $M$ is the spatial road mask.
+*   **The Result**: Because `nn.Linear` is standard, auto_LiRPA propagates bounds backward past convolutions in `'patches'` mode natively. This bypasses the $14400 \times 14400$ dense matrix flattening, dropping VRAM usage from **>12GB to ~2.2GB** and allowing GPU-accelerated SDP-CROWN sweeps to run in seconds.
+
+---
+
+## ⚙️ Alternative Strategy: Knowledge Distillation (KD)
+If a verifier-friendly network struggles to learn stable closed-loop steering on the Town04 loop:
+1.  Train a high-capacity "Expert" model (`CarlaSteeringExpertNet` with BatchNorm and Dropout) until it achieves stable closed-loop driving.
+2.  Use **Knowledge Distillation** to transfer the expert's control logic into the lightweight `CarlaSteeringNet` by forcing it to minimize MSE loss against the expert's steering logit predictions.
+3.  Verify the distilled `CarlaSteeringNet` natively.
+
+---
+
+## 💻 Running Commands Reference
+
+### 1. Model Training with Weather Augmentation:
 ```bash
-# From the repository root (sdp-crown-automated-driving)
-./venv_sdp/bin/python <script_name>.py [arguments]
+# Trains on clear dataset, dynamically applying ACDC weather scaling during training
+./venv_sdp/bin/python tools/train_carla_model.py \
+    --mode clear \
+    --weather-aug \
+    --model-type CarlaSteeringNet \
+    --epochs 30
 ```
 
-**VS Code Users:** You can also run these scripts by clicking the **"Play"** button in the top right corner of the editor. Each script contains a **CONTROL PANEL** block at the top of the file where you can modify default parameters (like weather condition, number of frames, or device) without using the command line.
-
-### Step 2: Characterize Adverse Weather (Generate $\epsilon$ Bounds)
-Run the standalone calibration script to calculate physical contrast drop and brightness bias bounds from the **ACDC dataset**.
-
-You can run this on a single drive split sequence to test a specific image grouping:
+### 2. Full Lap Closed-Loop Simulator Evaluation:
 ```bash
-./venv_sdp/bin/python tools/extract_physics_bounds.py \
-    --condition rain \
-    --sequence GOPR0402 \
-    --max_images 5
-```
-*   **What to expect:** The script will pair the rain images from `GOPR0402` with clear-weather reference frames, isolate road pixels using ground truth semantic masks, and output the derived bounds:
-    ```text
-    ==================================================
-    ========= RAIN CHARACTERIZATION RESULTS ==========
-    Total processed image pairs: 5
-    Contrast Drop (eps_c) range:    [0.3623, 1.4435]
-    Brightness Bias (eps_b) range:  [-0.2614, 0.0369]
-    ==================================================
-    ```
-*   **Output:** The recommended mathematically valid intervals (containing `0.0` as the nominal baseline) are saved to `results/physics_bounds.json`.
-
-### Step 3: Run CROWN Steering Verification
-Verify the pre-trained `MicroPilotNet` steering network on the Udacity dataset using the derived bounds.
-
-*Because dense matrix bounds tracking requires significant memory, we recommend using the `--device cpu` flag (or setting it in the script's CONTROL PANEL) to run verification on host memory and avoid GPU Out-Of-Memory (OOM) errors.*
-
-#### Test A: Using Calibration Bounds (Sequence specific)
-```bash
-./venv_sdp/bin/python verify_steering.py \
+# Spawns vehicle at frame 0 (right after intersection) and runs a full lap (960 frames)
+./venv_sdp/bin/python tools/test_carla_model.py \
+    --model-type CarlaSteeringNet \
+    --model-path models/carla_small_mixed_aug.pth \
+    --map Town04 \
     --weather rain \
-    --bounds_file results/physics_bounds.json \
-    --num_frames 5 \
-    --device cpu
+    --num-frames 960 \
+    --start-frame 0
 ```
 
-#### Test B: Using Paper-Calibrated Bounds (Recommended)
-Verify safety under the exact bounds reported in the study (which use tighter margins for global stability):
+### 3. SDP-CROWN Formal Verification Sweep:
 ```bash
+# Verifies safety bounds on a sequence of 50 continuous frames
 ./venv_sdp/bin/python verify_steering.py \
+    --model_type CarlaSteeringNet \
+    --weights_path models/carla_small_mixed_aug.pth \
     --weather rain \
-    --eps_c_min -0.0279 \
-    --eps_c_max 0.0 \
-    --eps_b_min 0.0 \
-    --eps_b_max 0.1003 \
-    --num_frames 5 \
-    --device cpu
+    --method SDP-CROWN \
+    --device cuda \
+    --num_frames 50 \
+    --iterations 20
 ```
-*   **What to expect:** The verifier computes worst-case steering output bounds ($\theta_{min}, \theta_{max}$) for each frame under the weather disturbance, and checks if they stay within a safety corridor of $\pm 0.1$ radians (approx. $2.5^\circ$) around the nominal clear steering path:
-    ```text
-    Verifying 5 frames of sequence...
-    =======================================================
-    ======== Starting RAIN AV Steering Verification =======
-    Safety Corridor: +/- 0.1 rad deviation from nominal path
-    =======================================================
-    Frame 00: Nominal: -0.0100 | Bounds: [-0.0147, -0.0083] | Corridor: [-0.1100, +0.0900] | SAFE
-    Frame 01: Nominal: -0.0048 | Bounds: [-0.0099, -0.0013] | Corridor: [-0.1048, +0.0952] | SAFE
-    ...
-    =======================================================
-    ========= Final RAIN Certified Safety: 100.0% =========
-    =======================================================
-    ```
-*   **Output:** Saves verification results to `results/verification_results.json`.
-
-### Step 4: Plot and Visualize Results
-Generate a professional graph plotting nominal steering, the safety corridor, CROWN worst-case steering bounds, and frame status:
-```bash
-./venv_sdp/bin/python tools/plot_verification.py
-```
-*   **Output:** Creates a high-resolution chart at `results/verification_plot.png`.
-
----
-
-## 2. Certified Safety Results (50-Frame Stress Test)
-
-When verified over a 50-frame continuous sequence of the Udacity Lake Track with a safety corridor of $\pm 0.1$ radians ($\approx 5.7^\circ$), the pre-trained `MicroPilotNet` controller yields the following certified safety rates under ACDC-calibrated physical bounds:
-
-| Weather Condition | Parameter Limits | Spatial Masking | Certified Safety (%) |
-| :--- | :--- | :--- | :--- |
-| **Rain (Wet Road)** | $\epsilon_c \in [-0.0279, 0.0]$, $\epsilon_b \in [0.0, 0.1003]$ | Bottom 50% (Road) | **100.0%** |
-| **Snow (Road Wash)** | $\epsilon_c \in [-0.2037, 0.0]$, $\epsilon_b \in [0.0, 0.2297]$ | Bottom 50% (Road) | **84.0%** |
-| **Fog (Global)** | $\epsilon_c \in [-0.1625, 0.0]$, $\epsilon_b \in [0.0, 0.1237]$ | None | **72.0%** |
-| **Night (Global)** | $\epsilon_c \in [-0.6275, 0.0]$, $\epsilon_b \in [0.0, 0.0472]$ | None | **0.0%** |
-
-### VRAM & The Memory Wall
-Because semantic perturbations globally couple all pixels in a convolutional network, the solver must bypass CROWN's sparse `patch-mode` and run in **dense matrix-mode** (`conv_mode: matrix`). Under standard PilotNet inputs, this requires a $39k \times 39k$ matrix, exceeding 12GB VRAM. We resolve this by downsampling the input to $37 \times 117$ pixels (`MicroPilotNet`), dropping VRAM usage to $\approx 600$MB.
-
----
-
-## 3. Directory Structure
-
-*   `tools/`
-    *   `extract_physics_bounds.py`: Stands alone to run ACDC contrast and brightness statistical characterizations.
-    *   `plot_verification.py`: Stands alone to plot safety corridor vs. CROWN boundaries.
-*   `auto_LiRPA/`: Core Linear Bound Propagation library.
-*   `datasets/`: Directory containing ACDC and Udacity driving datasets.
-*   `models_weights/`: Pretrained model weights (e.g., `pilotnet_udacity.pth`).
-*   `models.py`: Network definitions (including classification baselines and `MicroPilotNet`).
-*   `semantic_layers.py`: Implements custom PyTorch weather layers and network wrapper module.
-*   `udacity_dataset.py`: Udacity image loader, crops the top (sky) and bottom (hood) before resizing.
-*   `verify_steering.py`: Runs regression verifier over continuous driving frames.
-*   `ROADMAP.md`: [Roadmap & Feature Checklist](file:///home/za/ad_assurance/sdp-crown-automated-driving/ROADMAP.md) for future verification features (glare, lens blinding, depth-fog).
-
----
-
-
-## 3. Core Baseline Verification (MNIST & CIFAR)
-
-To run baseline classification verification (L2-norm radius perturbations) to reproduce original academic benchmarks:
-
-```bash
-# Reproducing results in the SDP-CROWN paper (re-scales and runs SDP-CROWN)
-./run_sdp_crown.sh
-```
-Or execute individual models:
-```bash
-./venv_sdp/bin/python sdp_crown.py --model mnist_mlp --radius 1.0
-./venv_sdp/bin/python sdp_crown.py --model cifar10_cnn_a --radius 24/255
-```
-
----
-
-## 4. Code Implementation Examples
-
-Below are the code snippets illustrating the verifier-friendly `MicroPilotNet` architecture and the continuous verification/garbage collection loop:
-
-### A. MicroPilotNet Architecture
-```python
-class MicroPilotNet(nn.Module):
-    def __init__(self):
-        super(MicroPilotNet, self).__init__()
-        # Input: 3 channels (RGB), 37 height, 117 width
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(3, 24, 5, stride=2), nn.ReLU(),
-            nn.Conv2d(24, 36, 5, stride=2), nn.ReLU(),
-            nn.Conv2d(36, 48, 5, stride=2), nn.ReLU(),
-            nn.Conv2d(48, 64, 3, padding=1), nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1), nn.ReLU()
-        )
-        # Flattened size: 64 channels * 2 height * 12 width = 1536
-        self.linear_layers = nn.Sequential(
-            nn.Linear(1536, 100), nn.ReLU(),
-            nn.Linear(100, 50), nn.ReLU(),
-            nn.Linear(50, 10), nn.ReLU(),
-            nn.Linear(10, 1) # Single regression output
-        )
-
-    def forward(self, x):
-        x = self.conv_layers(x)
-        x = x.view(x.size(0), -1) 
-        return self.linear_layers(x)
-```
-
-### B. CROWN/SDP-CROWN Execution and Memory Management Loop
-```python
-# Initialize BoundedModule (use 'conv_mode': 'matrix' for semantic perturbations)
-lirpa_model = BoundedModule(
-    wrapped_model, bounded_eps, device=device, verbose=0, bound_opts={'conv_mode': 'matrix'}
-)
-
-# Compute regression bounds using CROWN
-crown_lb, crown_ub = lirpa_model.compute_bounds(
-    x=(bounded_eps,), method='CROWN', bound_lower=True, bound_upper=True
-)
-
-# Evaluate safety corridor (+/- 0.1 rad deviation)
-is_safe = (crown_lb.item() >= nominal_steering - 0.1) and (crown_ub.item() <= nominal_steering + 0.1)
-
-# Clear computational graph and clear CUDA VRAM cache
-del crown_lb, crown_ub, lirpa_model, wrapped_model, bounded_eps
-import gc
-gc.collect()
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-```
-
----
-
-## References
-
-*   **SDP-CROWN Paper:** [ICML 2025 PDF](https://arxiv.org/pdf/2506.06665)
-*   **ACDC Dataset:** [ETH Zurich](https://acdc.vision.ee.ethz.ch/)
-*   **auto_LiRPA Engine:** [GitHub](https://github.com/KaidiXu/auto_LiRPA)

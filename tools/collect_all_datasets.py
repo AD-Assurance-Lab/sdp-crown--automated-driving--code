@@ -17,11 +17,11 @@ def main():
                     lines = f.readlines()
                 # Subtract 1 for the header
                 num_frames = len(lines) - 1
-                if num_frames >= 5000:
+                if num_frames >= 1000:
                     print(f"Weather '{w}' already has {num_frames} frames in {csv_path}. Skipping collection.")
                     continue
                 else:
-                    print(f"Weather '{w}' has incomplete collection ({num_frames}/5000 frames). Re-running...")
+                    print(f"Weather '{w}' has incomplete collection ({num_frames}/1000 frames). Re-running...")
             except Exception as e:
                 print(f"Error reading {csv_path}: {e}. Re-running...")
                 
@@ -34,7 +34,7 @@ def main():
             "./venv_sdp/bin/python",
             "tools/carla_data_collector.py",
             "--weather", w,
-            "--num-frames", "5000",
+            "--num-frames", "2000",
             "--seed", "42",
             "--spawn-point-idx", "12"
         ]

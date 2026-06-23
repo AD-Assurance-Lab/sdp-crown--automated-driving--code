@@ -51,7 +51,7 @@ for model_name, weights_path in models.items():
                 "--weather", weather,
                 "--method", "CROWN",
                 "--num_frames", "10",
-                "--device", "cpu",
+                "--device", "cuda",
                 "--bounds_file", "results/acdc_physics_bounds.json",
                 "--output_results", crown_out
             ]

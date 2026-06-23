@@ -14,7 +14,8 @@ import matplotlib.pyplot as plt
 
 # Add parent directory and CARLA PythonAPI to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models import CarlaSteeringNet
+from models import CarlaSteeringNet, CarlaSteeringExpertNet
+from weather_config import set_weather_profile, apply_vehicle_lights
 
 carla_root = "/home/za/carla"
 try:
@@ -39,7 +40,7 @@ def parse_args():
     parser.add_argument("--port", default=2000, type=int, help="TCP port to listen to")
     parser.add_argument("--map", default="Town01", help="Name of the CARLA map/town to load")
     parser.add_argument("--weather", default="clear", choices=["clear", "rain", "fog", "night"], help="Weather profile")
-    parser.add_argument("--model-path", default="models/carla_steering_net_clear.pth", help="Path to trained PyTorch steering model")
+    parser.add_argument("--model-path", default="models/carla_expert_clear.pth", help="Path to trained PyTorch steering model")
     parser.add_argument("--num-frames", default=1000, type=int, help="Number of simulation frames to run evaluation")
     parser.add_argument("--width", default=640, type=int, help="Image width")
     parser.add_argument("--height", default=480, type=int, help="Image height")
@@ -47,49 +48,12 @@ def parse_args():
     parser.add_argument("--spawn-point-idx", default=12, type=int, help="Index of spawn point for the ego vehicle")
     parser.add_argument("--save-plot", default="results/carla_ai_model_testing/carla_closed_loop_evaluation.png", help="Path to save the validation plot")
     parser.add_argument("--save-csv", default="results/carla_ai_model_testing/carla_closed_loop_evaluation.csv", help="Path to save log CSV data")
+    parser.add_argument("--model-type", default="CarlaSteeringExpertNet", choices=["CarlaSteeringNet", "CarlaSteeringExpertNet"], help="Model architecture type")
+    parser.add_argument("--start-frame", default=0, type=int, help="Frame index on reference trajectory to spawn ego vehicle at")
     return parser.parse_args()
 
 def set_weather(world, profile):
-    weather = world.get_weather()
-    if profile == "clear":
-        weather.cloudiness = 0.0
-        weather.precipitation = 0.0
-        weather.precipitation_deposits = 0.0
-        weather.wind_intensity = 0.0
-        weather.sun_azimuth_angle = 0.0
-        weather.sun_altitude_angle = 75.0
-        weather.fog_density = 0.0
-        weather.wetness = 0.0
-    elif profile == "rain":
-        weather.cloudiness = 80.0
-        weather.precipitation = 80.0
-        weather.precipitation_deposits = 80.0
-        weather.wind_intensity = 50.0
-        weather.sun_azimuth_angle = 0.0
-        weather.sun_altitude_angle = 45.0
-        weather.fog_density = 10.0
-        weather.wetness = 80.0
-    elif profile == "fog":
-        weather.cloudiness = 90.0
-        weather.precipitation = 0.0
-        weather.precipitation_deposits = 0.0
-        weather.wind_intensity = 10.0
-        weather.sun_azimuth_angle = 0.0
-        weather.sun_altitude_angle = 45.0
-        weather.fog_density = 75.0
-        weather.fog_distance = 5.0
-        weather.wetness = 0.0
-    elif profile == "night":
-        weather.cloudiness = 10.0
-        weather.precipitation = 0.0
-        weather.precipitation_deposits = 0.0
-        weather.wind_intensity = 0.0
-        weather.sun_azimuth_angle = 0.0
-        weather.sun_altitude_angle = -75.0
-        weather.fog_density = 0.0
-        weather.wetness = 0.0
-    world.set_weather(weather)
-    print(f"Weather set to profile: {profile.upper()}")
+    set_weather_profile(world, profile)
 
 def sensor_callback(image, image_queue):
     image_queue.put(image)
@@ -105,7 +69,10 @@ def main():
     # Load model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading model from {args.model_path} onto device: {device}...")
-    model = CarlaSteeringNet().to(device)
+    if args.model_type == "CarlaSteeringNet":
+        model = CarlaSteeringNet().to(device)
+    else:
+        model = CarlaSteeringExpertNet().to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model.eval()
     print("Model loaded successfully.")
@@ -117,11 +84,30 @@ def main():
     eval_records = []
     
     # Load reference steering dataset to get nominal steering values and coordinates at each time step
-    ref_csv_path = os.path.join("datasets/carla_steering_e2e", args.weather, "index.csv")
+    ref_csv_path = None
+    if args.map == "Town04":
+        small_baseline_path = os.path.join("results/carla_ai_model_testing", "town04_small_mixed_clear.csv")
+        if os.path.exists(small_baseline_path):
+            ref_csv_path = small_baseline_path
+        else:
+            town04_baseline_path = os.path.join("results/carla_ai_model_testing", "town04_clear_only_clear.csv")
+            if os.path.exists(town04_baseline_path):
+                ref_csv_path = town04_baseline_path
+            
+    if ref_csv_path is None:
+        ref_csv_path = os.path.join("datasets/carla_steering_e2e", args.weather, "index.csv")
+
     if os.path.exists(ref_csv_path):
         print(f"Loading reference nominal dataset from: {ref_csv_path}")
         ref_df = pd.read_csv(ref_csv_path)
-        nominal_steer_list = ref_df["steering"].tolist()
+        # Handle column naming variations (nominal_steer vs steering)
+        if "steering" in ref_df.columns:
+            nominal_steer_list = ref_df["steering"].tolist()
+        elif "nominal_steer" in ref_df.columns:
+            nominal_steer_list = ref_df["nominal_steer"].tolist()
+        else:
+            nominal_steer_list = [0.0] * len(ref_df)
+            
         has_ref_coords = "x" in ref_df.columns and "y" in ref_df.columns
         if has_ref_coords:
             ref_x_list = ref_df["x"].tolist()
@@ -146,27 +132,53 @@ def main():
         original_settings = world.get_settings()
         settings = world.get_settings()
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 0.1  # 10 Hz
+        
+        # Align frequency: Town04 models were trained at 5 Hz, Town01 at 10 Hz
+        fixed_dt = 0.2 if args.map == "Town04" else 0.1
+        settings.fixed_delta_seconds = fixed_dt
         world.apply_settings(settings)
-        print("Synchronous mode enabled at 10 Hz.")
+        print(f"Synchronous mode enabled at {1.0/fixed_dt:.1f} Hz.")
         
         blueprint_library = world.get_blueprint_library()
         
         # Spawn ego vehicle
         vehicle_bp = blueprint_library.filter('vehicle.tesla.model3')[0]
-        spawn_points = world.get_map().get_spawn_points()
-        if not spawn_points:
-            spawn_point = carla.Transform()
-            print("Warning: No spawn points found on map. Using default Transform.")
+        if has_ref_coords and args.map == "Town04":
+            # Spawn ego vehicle at the specified start frame of reference trajectory
+            idx = min(args.start_frame, len(ref_x_list) - 1)
+            loc_x = ref_x_list[idx]
+            loc_y = ref_y_list[idx]
+            
+            # Estimate heading direction (yaw) using forward differences
+            if idx + 1 < len(ref_x_list):
+                dy = ref_y_list[idx + 1] - ref_y_list[idx]
+                dx = ref_x_list[idx + 1] - ref_x_list[idx]
+                yaw = float(np.degrees(np.arctan2(dy, dx)))
+            else:
+                yaw = 0.0
+                
+            spawn_point = carla.Transform(
+                carla.Location(x=loc_x, y=loc_y, z=1.0),
+                carla.Rotation(yaw=yaw)
+            )
+            print(f"Spawning ego vehicle at reference trajectory frame {idx}: {spawn_point.location} with yaw {yaw:.2f} degrees")
         else:
-            spawn_point_idx = args.spawn_point_idx % len(spawn_points)
-            spawn_point = spawn_points[spawn_point_idx]
-            spawn_point.location.z += 0.5
-            print(f"Spawn point index {spawn_point_idx} at location {spawn_point.location}")
+            spawn_points = world.get_map().get_spawn_points()
+            if not spawn_points:
+                spawn_point = carla.Transform()
+                print("Warning: No spawn points found on map. Using default Transform.")
+            else:
+                spawn_point_idx = args.spawn_point_idx % len(spawn_points)
+                spawn_point = spawn_points[spawn_point_idx]
+                spawn_point.location.z += 0.5
+                print(f"Spawn point index {spawn_point_idx} at location {spawn_point.location}")
             
         ego_vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         actor_list.append(ego_vehicle)
         print(f"Spawned ego vehicle: {ego_vehicle.type_id}")
+        
+        # Turn headlights ON/OFF based on weather (shared config)
+        apply_vehicle_lights(ego_vehicle, args.weather)
         
         
         # Spawn front camera
@@ -190,14 +202,19 @@ def main():
         
         # Warmup ticks for auto-exposure & vehicle stabilization
         print("Warming up auto-exposure and vehicle stabilization...")
+        # Determine target speed in m/s based on map (Town04 uses 20 mph, Town01 uses 10 mph)
+        target_speed_ms = 8.9408 if args.map == "Town04" else 4.4704
+        print(f"Target speed set to {20.0 if args.map == 'Town04' else 10.0} mph ({target_speed_ms} m/s)")
+        
         for _ in range(30):
-            try:
-                # Direct velocity override (10 mph = 4.4704 m/s)
-                transform = ego_vehicle.get_transform()
-                forward_vec = transform.get_forward_vector()
-                ego_vehicle.set_target_velocity(forward_vec * 4.4704)
-            except Exception:
-                pass
+            if args.start_frame == 0:
+                try:
+                    # Direct velocity override
+                    transform = ego_vehicle.get_transform()
+                    forward_vec = transform.get_forward_vector()
+                    ego_vehicle.set_target_velocity(forward_vec * target_speed_ms)
+                except Exception:
+                    pass
             world.tick()
             try:
                 # Update spectator to follow the ego vehicle
@@ -214,13 +231,6 @@ def main():
         print("Warmup complete. Starting closed-loop evaluation...")
         
         for step in range(args.num_frames):
-            try:
-                # Direct velocity override (10 mph = 4.4704 m/s)
-                transform = ego_vehicle.get_transform()
-                forward_vec = transform.get_forward_vector()
-                ego_vehicle.set_target_velocity(forward_vec * 4.4704)
-            except Exception:
-                pass
             world.tick()
             
             # Update spectator to follow the ego vehicle
@@ -240,12 +250,20 @@ def main():
                 print(f"Warning: Step {step} timed out waiting for camera frame.")
                 continue
                 
-            # 1. Retrieve the nominal autopilot steering from data collection at this time step
-            nominal_steer = nominal_steer_list[step] if step < len(nominal_steer_list) else 0.0
-            
             # Retrieve speed for controller in mph (1 m/s = 2.23694 mph)
             vel = ego_vehicle.get_velocity()
             speed_mph = 2.23694 * np.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
+            loc = ego_vehicle.get_location()
+            
+            # 1. Retrieve the nominal autopilot steering and CTE from spatial nearest neighbor
+            if has_ref_coords:
+                dists = np.sqrt((np.array(ref_x_list) - loc.x)**2 + (np.array(ref_y_list) - loc.y)**2)
+                nearest_idx = int(np.argmin(dists))
+                cte = float(dists[nearest_idx])
+                nominal_steer = nominal_steer_list[nearest_idx]
+            else:
+                cte = 0.0
+                nominal_steer = 0.0
             
             # 2. Extract image and preprocess
             array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
@@ -254,7 +272,8 @@ def main():
             
             # Preprocessing matching train_carla_model.py
             rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
-            resized = cv2.resize(rgb_image, (80, 60))
+            cropped = rgb_image[180:400, :]
+            resized = cv2.resize(cropped, (80, 60))
             normalized = resized.astype(np.float32) / 255.0
             
             # Convert to PyTorch tensor
@@ -263,19 +282,19 @@ def main():
             # 3. Model prediction (predicted steering angle)
             with torch.no_grad():
                 pred_steer_tensor = model(img_tensor)
-                # Extract scalar value and clamp to vehicle control limits [-1.0, 1.0]
+                # Extract scalar value and clamp directly (no 2.0x multiplier needed with weighted MSE training)
                 pred_steer = float(pred_steer_tensor.squeeze().cpu().item())
                 pred_steer = max(-1.0, min(1.0, pred_steer))
                 
-            # 4. Apply closed-loop speed control (Target: 15 mph) and neural steer
-            target_speed = 10.0  # mph
+            # 4. Apply closed-loop speed control and neural steer
+            target_speed = 20.0 if args.map == "Town04" else 10.0  # mph
             speed_error = target_speed - speed_mph
             if speed_error > 0:
-                throttle = min(0.4, 0.1 + speed_error * 0.05)
+                throttle = min(0.8, 0.3 + speed_error * 0.15)
                 brake = 0.0
             else:
                 throttle = 0.0
-                brake = min(0.4, -speed_error * 0.05)
+                brake = min(0.5, -speed_error * 0.1)
                 
             # We bypass the autopilot brake to prevent the vehicle from getting stuck at red lights.
                 
@@ -284,16 +303,6 @@ def main():
                 steer=pred_steer,
                 brake=brake
             ))
-            
-            # 5. Log telemetry and calculate CTE (Cross-Track Error)
-            loc = ego_vehicle.get_location()
-            
-            if has_ref_coords:
-                # Find Euclidean distance to all points on reference path to get minimum (cross-track error)
-                dists = np.sqrt((np.array(ref_x_list) - loc.x)**2 + (np.array(ref_y_list) - loc.y)**2)
-                cte = float(np.min(dists))
-            else:
-                cte = 0.0
                 
             eval_records.append({
                 "step": step,

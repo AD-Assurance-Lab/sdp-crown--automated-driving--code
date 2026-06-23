@@ -1,0 +1,22 @@
+{
+    "weather": "rain",
+    "eps_c_min": -0.4337,
+    "eps_c_max": 0.0,
+    "eps_b_min": 0.0,
+    "eps_b_max": 0.1013,
+    "safe_deviation": 0.1,
+    "total_frames": 1,
+    "safe_frames": 1,
+    "safety_rate": 100.0,
+    "frames": [
+        {
+            "frame_idx": 0,
+            "nominal_steering": 0.017765752971172333,
+            "lower_bound": -0.05450328812003136,
+            "upper_bound": 0.0968957170844078,
+            "lower_corridor": -0.08223424702882767,
+            "upper_corridor": 0.11776575297117234,
+            "status": "SAFE"
+        }
+    ]
+}
