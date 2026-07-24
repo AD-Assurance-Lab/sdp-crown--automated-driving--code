@@ -22,3 +22,13 @@ logs/
 results/verification_results.json
 results/verification_plot.png
 results/physics_bounds.json
+
+# Local debug/scratch scripts (kept locally, not tracked)
+scratch/
+
+# New pipeline artifacts — data frames (GBs), model checkpoints, and results
+# (plots/CSVs) are regenerable and stay out of git. Reference routes live under
+# data/ and are rebuilt via pipeline/build_routes.py.
+pipeline/data/
+pipeline/checkpoints/
+pipeline/results/
