@@ -29,41 +29,45 @@ from dataset import load_manifests, block_split
 
 
 def aggregated_manifests(base="clear"):
-    """Base BC manifest + every DAgger round manifest present on disk."""
+    """Base BC manifest + every teacher-DAgger and student-DAgger round manifest."""
     paths = [os.path.join(C.DATASET_DIR, base, "manifest.csv")]
-    dagger = os.path.join(C.DATASET_DIR, "dagger")
-    if os.path.isdir(dagger):
-        for d in sorted(os.listdir(dagger)):
-            m = os.path.join(dagger, d, "manifest.csv")
-            if os.path.isfile(m):
-                paths.append(m)
+    for sub in ("dagger", "dagger_student"):
+        root = os.path.join(C.DATASET_DIR, sub)
+        if os.path.isdir(root):
+            for d in sorted(os.listdir(root)):
+                m = os.path.join(root, d, "manifest.csv")
+                if os.path.isfile(m):
+                    paths.append(m)
     return paths
 
 
 def teacher_targets(rows, teacher_name, device):
-    """dict abs_image_path -> teacher steering. Cached to an .npz keyed by teacher."""
+    """dict abs_image_path -> teacher steering. Cached; only NEW frames (e.g. from
+    student-DAgger rounds) are computed on subsequent calls, not the whole set."""
     cache = os.path.join(C.DATASET_DIR, "dagger", f"teacher_targets_{teacher_name}.npz")
+    d = {}
     if os.path.isfile(cache):
         z = np.load(cache, allow_pickle=True)
-        d = dict(zip(z["paths"], z["steer"]))
-        if all(r["image"] in d for r in rows):
-            print(f"loaded cached teacher targets ({len(d)}) from {cache}")
-            return d
-    print(f"computing teacher targets for {len(rows)} frames with '{teacher_name}'...")
+        d = {str(p): float(s) for p, s in zip(z["paths"], z["steer"])}
+    missing = [r for r in rows if r["image"] not in d]
+    if not missing:
+        print(f"all {len(rows)} teacher targets cached")
+        return d
+    print(f"computing teacher targets for {len(missing)} new frames with '{teacher_name}'...")
     teacher = CarlaSteeringNet().to(device)
     teacher.load_state_dict(torch.load(os.path.join(C.CHECKPOINT_DIR, f"{teacher_name}.pth"),
                                        map_location=device))
     teacher.eval()
-    paths, steers = [], []
     with torch.no_grad():
-        for i, r in enumerate(rows):
+        for i, r in enumerate(missing):
             bgr = cv2.imread(r["image"])
             x = torch.from_numpy(preprocess_for_model(bgr)).unsqueeze(0).to(device)
-            paths.append(r["image"]); steers.append(float(teacher(x).item()))
+            d[r["image"]] = float(teacher(x).item())
             if i % 2000 == 0:
-                print(f"  {i}/{len(rows)}")
-    np.savez(cache, paths=np.array(paths), steer=np.array(steers, dtype=np.float32))
-    return dict(zip(paths, steers))
+                print(f"  {i}/{len(missing)}")
+    paths = list(d.keys())
+    np.savez(cache, paths=np.array(paths), steer=np.array([d[p] for p in paths], dtype=np.float32))
+    return d
 
 
 class KDDataset(Dataset):
