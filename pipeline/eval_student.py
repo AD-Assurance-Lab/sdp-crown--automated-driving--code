@@ -24,6 +24,7 @@ import carla_env as env
 from route import load_route, signed_cte_route, pure_pursuit_route
 from metrics import summarize_cte
 from student import StudentNet, student_preprocess
+from weather_bounds import BOUNDS_SETS, worst_corner
 
 SPAWNS = {"eastbound": C.SPAWN_EASTBOUND, "westbound": C.SPAWN_WESTBOUND}
 
@@ -50,7 +51,7 @@ def set_weather(world, name):
     world.set_weather(w)
 
 
-def drive(world, vehicle, img_queue, model, device, w, h, direction, max_steps):
+def drive(world, vehicle, img_queue, model, device, w, h, direction, max_steps, perturb=None):
     route = load_route(direction)
     hint = None
     sc = env.SpeedController()
@@ -69,6 +70,9 @@ def drive(world, vehicle, img_queue, model, device, w, h, direction, max_steps):
         tf = vehicle.get_transform()
         loc = tf.location
         xin = torch.from_numpy(student_preprocess(env.raw_to_bgr(image), w, h)).unsqueeze(0).to(device)
+        if perturb is not None:  # affine weather perturbation, same model as the verifier
+            ec, eb = perturb
+            xin = torch.clamp(xin * (1.0 + ec) + eb, 0.0, 1.0)
         with torch.no_grad():
             nn_steer = max(-1.0, min(1.0, float(model(xin).item())))
         cte, hint = signed_cte_route(route, loc.x, loc.y, hint)
@@ -95,6 +99,10 @@ def main():
     ap.add_argument("--w", type=int, required=True)
     ap.add_argument("--h", type=int, required=True)
     ap.add_argument("--weather", default="clear", choices=["clear", "fog", "rain", "night"])
+    ap.add_argument("--affine", default="none", choices=["none", "acdc", "carla"],
+                    help="apply affine weather eps (worst corner) in-loop on CLEAR weather")
+    ap.add_argument("--acond", default="night", choices=["fog", "rain", "night", "snow"],
+                    help="condition for --affine")
     ap.add_argument("--direction", default="both", choices=["eastbound", "westbound", "both"])
     ap.add_argument("--max-steps", type=int, default=2000)
     ap.add_argument("--tag", default="", help="suffix for output files")
@@ -106,10 +114,18 @@ def main():
                                      map_location=device))
     model.eval()
 
+    # Affine mode: force CLEAR weather and apply the affine eps in-loop (isolates
+    # the affine perturbation the verifier reasons about, no rendered weather).
+    perturb, label = None, args.weather
+    if args.affine != "none":
+        perturb = worst_corner(BOUNDS_SETS[args.affine][args.acond])
+        label = f"affine-{args.affine}-{args.acond}"
+        print(f"AFFINE mode: {label}  eps=(c={perturb[0]:+.4f}, b={perturb[1]:+.4f}) on CLEAR weather")
+
     client = env.connect()
     world = env.load_town04(client)
     original = env.enable_sync_mode(world)
-    set_weather(world, args.weather)
+    set_weather(world, "clear" if args.affine != "none" else args.weather)
     vehicle = env.spawn_vehicle(world, C.SPAWN_EASTBOUND)
     camera, img_queue = env.spawn_camera(world, vehicle)
 
@@ -117,20 +133,21 @@ def main():
     results = {}
     try:
         for d in dirs:
-            recs = drive(world, vehicle, img_queue, model, device, args.w, args.h, d, args.max_steps)
+            recs = drive(world, vehicle, img_queue, model, device, args.w, args.h, d,
+                         args.max_steps, perturb=perturb)
             st = summarize_cte([r["cte_m"] for r in recs])
             results[d] = st
-            print(f"  [{args.weather}/{d}] over-budget={st.get('frac_over_budget',1)*100:5.1f}%  "
+            print(f"  [{label}/{d}] over-budget={st.get('frac_over_budget',1)*100:5.1f}%  "
                   f"max|CTE|={st.get('max_abs_cte_m',0)*C.M_TO_FT:5.2f}ft  "
                   f"-> {'PASS' if st.get('passed') else 'FAIL'}")
             os.makedirs(C.RESULTS_DIR, exist_ok=True)
             tag = f"_{args.tag}" if args.tag else ""
-            with open(os.path.join(C.RESULTS_DIR, f"evalstu_{args.student}_{args.weather}_{d}{tag}.csv"), "w", newline="") as f:
+            with open(os.path.join(C.RESULTS_DIR, f"evalstu_{args.student}_{label}_{d}{tag}.csv"), "w", newline="") as f:
                 wr = csv.DictWriter(f, fieldnames=list(recs[0].keys())); wr.writeheader(); wr.writerows(recs)
     finally:
         env.cleanup([camera, vehicle], world, original)
 
-    print(f"\n===== {args.student} @ {args.weather} =====")
+    print(f"\n===== {args.student} @ {label} =====")
     for d, st in results.items():
         print(f"  {d:10s}: {'PASS' if st.get('passed') else 'FAIL'} "
               f"(over {st.get('frac_over_budget',1)*100:.1f}%, max {st.get('max_abs_cte_m',0)*C.M_TO_FT:.2f}ft)")
