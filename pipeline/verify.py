@@ -126,10 +126,12 @@ def main():
                     choices=["IBP", "CROWN", "alpha-CROWN", "SDP-CROWN"])
     ap.add_argument("--frames", type=int, default=20)
     ap.add_argument("--dataset", default="clear")
+    ap.add_argument("--corridor", type=float, default=None,
+                    help="override steering corridor (norm); default = config's ±2.88deg")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    corridor = C.STEER_CORRIDOR_NORM
+    corridor = args.corridor if args.corridor is not None else C.STEER_CORRIDOR_NORM
     base = StudentNet(args.h, args.w).to(device)
     base.load_state_dict(torch.load(os.path.join(C.CHECKPOINT_DIR, f"{args.student}.pth"),
                                     map_location=device))

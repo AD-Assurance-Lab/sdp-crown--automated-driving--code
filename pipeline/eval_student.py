@@ -51,7 +51,8 @@ def set_weather(world, name):
     world.set_weather(w)
 
 
-def drive(world, vehicle, img_queue, model, device, w, h, direction, max_steps, perturb=None):
+def drive(world, vehicle, img_queue, model, device, w, h, direction, max_steps,
+          perturb=None, bias=0.0):
     route = load_route(direction)
     hint = None
     sc = env.SpeedController()
@@ -74,7 +75,7 @@ def drive(world, vehicle, img_queue, model, device, w, h, direction, max_steps, 
             ec, eb = perturb
             xin = torch.clamp(xin * (1.0 + ec) + eb, 0.0, 1.0)
         with torch.no_grad():
-            nn_steer = max(-1.0, min(1.0, float(model(xin).item())))
+            nn_steer = max(-1.0, min(1.0, float(model(xin).item()) + bias))  # constant steering-bias probe
         cte, hint = signed_cte_route(route, loc.x, loc.y, hint)
         thr, brk = sc.control(vehicle)
         vehicle.apply_control(carla.VehicleControl(throttle=thr, brake=brk, steer=nn_steer))
@@ -104,6 +105,8 @@ def main():
     ap.add_argument("--acond", default="night", choices=["fog", "rain", "night", "snow"],
                     help="condition for --affine")
     ap.add_argument("--direction", default="both", choices=["eastbound", "westbound", "both"])
+    ap.add_argument("--bias", type=float, default=0.0,
+                    help="constant steering bias added each frame (Level-1 sensitivity probe)")
     ap.add_argument("--max-steps", type=int, default=2000)
     ap.add_argument("--tag", default="", help="suffix for output files")
     args = ap.parse_args()
@@ -121,6 +124,9 @@ def main():
         perturb = worst_corner(BOUNDS_SETS[args.affine][args.acond])
         label = f"affine-{args.affine}-{args.acond}"
         print(f"AFFINE mode: {label}  eps=(c={perturb[0]:+.4f}, b={perturb[1]:+.4f}) on CLEAR weather")
+    if args.bias != 0.0:
+        label = f"{label}_bias{args.bias:+.3f}"
+        print(f"BIAS probe: constant steering bias {args.bias:+.4f}")
 
     client = env.connect()
     world = env.load_town04(client)
@@ -134,7 +140,7 @@ def main():
     try:
         for d in dirs:
             recs = drive(world, vehicle, img_queue, model, device, args.w, args.h, d,
-                         args.max_steps, perturb=perturb)
+                         args.max_steps, perturb=perturb, bias=args.bias)
             st = summarize_cte([r["cte_m"] for r in recs])
             results[d] = st
             print(f"  [{label}/{d}] over-budget={st.get('frac_over_budget',1)*100:5.1f}%  "
