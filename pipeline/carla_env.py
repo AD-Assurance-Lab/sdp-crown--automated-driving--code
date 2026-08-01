@@ -51,8 +51,10 @@ def enable_sync_mode(world):
     settings.synchronous_mode = True
     settings.fixed_delta_seconds = FIXED_DT
     settings.substepping = True
-    settings.max_substep_delta_time = 0.01
-    settings.max_substeps = math.ceil(FIXED_DT / 0.01)  # 20 for dt=0.2 -> 0.2s physics
+    # CARLA requires max_substeps in [1,16] AND max_substep_delta_time*max_substeps
+    # >= fixed_delta_seconds (else physics silently advances less than the full step).
+    settings.max_substeps = 16
+    settings.max_substep_delta_time = FIXED_DT / 16   # 0.0125 for dt=0.2 -> full 0.2s
     world.apply_settings(settings)
     return original
 
@@ -86,6 +88,18 @@ def spawn_vehicle(world, spawn):
         tf.location.z += 0.5
         vehicle = world.spawn_actor(bp, tf)
     return vehicle
+
+
+def set_tire_friction(vehicle, friction):
+    """Set all wheels' tire friction (snow/ice ~0.5-1.5 vs dry ~3+). Models the
+    traction loss of winter driving -- a vehicle-dynamics hazard that a perception
+    -> steering verifier cannot capture."""
+    pc = vehicle.get_physics_control()
+    wheels = pc.wheels
+    for w in wheels:
+        w.tire_friction = friction
+    pc.wheels = wheels
+    vehicle.apply_physics_control(pc)
 
 
 def spawn_camera(world, vehicle):

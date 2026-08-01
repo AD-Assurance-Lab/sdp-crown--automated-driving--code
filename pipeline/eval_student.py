@@ -107,6 +107,8 @@ def main():
     ap.add_argument("--direction", default="both", choices=["eastbound", "westbound", "both"])
     ap.add_argument("--bias", type=float, default=0.0,
                     help="constant steering bias added each frame (Level-1 sensitivity probe)")
+    ap.add_argument("--friction", type=float, default=None,
+                    help="tire friction (snow/ice ~0.5-1.5 vs dry ~3+); models traction loss")
     ap.add_argument("--max-steps", type=int, default=2000)
     ap.add_argument("--tag", default="", help="suffix for output files")
     args = ap.parse_args()
@@ -133,6 +135,10 @@ def main():
     original = env.enable_sync_mode(world)
     set_weather(world, "clear" if args.affine != "none" else args.weather)
     vehicle = env.spawn_vehicle(world, C.SPAWN_EASTBOUND)
+    if args.friction is not None:
+        env.set_tire_friction(vehicle, args.friction)
+        label = f"{label}_fric{args.friction}"
+        print(f"FRICTION: tire_friction={args.friction} (winter traction loss)")
     camera, img_queue = env.spawn_camera(world, vehicle)
 
     dirs = ["eastbound", "westbound"] if args.direction == "both" else [args.direction]
