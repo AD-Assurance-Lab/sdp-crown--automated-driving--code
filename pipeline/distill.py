@@ -28,10 +28,13 @@ from imaging import preprocess_for_model
 from dataset import load_manifests, block_split
 
 
-def aggregated_manifests(base="clear"):
-    """Base BC manifest + every teacher-DAgger and student-DAgger round manifest."""
+def aggregated_manifests(base="clear", dagger_dirs=("dagger", "dagger_student")):
+    """Base BC manifest + every DAgger round manifest under the given dirs.
+    dagger_dirs selects which DAgger runs to fold in (e.g. the clear model uses
+    dagger/dagger_student; the mixed model uses dagger_mixed) so distilling one
+    model never silently pulls in the other model's recovery data."""
     paths = [os.path.join(C.DATASET_DIR, base, "manifest.csv")]
-    for sub in ("dagger", "dagger_student"):
+    for sub in dagger_dirs:
         root = os.path.join(C.DATASET_DIR, sub)
         if os.path.isdir(root):
             for d in sorted(os.listdir(root)):
@@ -44,7 +47,7 @@ def aggregated_manifests(base="clear"):
 def teacher_targets(rows, teacher_name, device):
     """dict abs_image_path -> teacher steering. Cached; only NEW frames (e.g. from
     student-DAgger rounds) are computed on subsequent calls, not the whole set."""
-    cache = os.path.join(C.DATASET_DIR, "dagger", f"teacher_targets_{teacher_name}.npz")
+    cache = os.path.join(C.DATASET_DIR, f"teacher_targets_{teacher_name}.npz")
     d = {}
     if os.path.isfile(cache):
         z = np.load(cache, allow_pickle=True)
@@ -100,12 +103,13 @@ def _mse(model, loader, device):
 
 
 def distill_student(in_w, in_h, out_name, teacher_name="steering_dagger_r02",
-                    base="clear", epochs=120, batch_size=64, lr=1e-3, patience=20,
+                    base="clear", dagger_dirs=("dagger", "dagger_student"),
+                    epochs=120, batch_size=64, lr=1e-3, patience=20,
                     device=None, quiet=False):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(0)
     os.makedirs(C.CHECKPOINT_DIR, exist_ok=True)
-    _, rows = load_manifests(aggregated_manifests(base))
+    _, rows = load_manifests(aggregated_manifests(base, dagger_dirs))
     targets = teacher_targets(rows, teacher_name, device)
     tr_idx, va_idx = block_split(len(rows), val_frac=0.15, block=50, seed=0)
 
@@ -150,9 +154,14 @@ def main():
     ap.add_argument("--in-h", type=int, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--teacher", default="steering_dagger_r02")
+    ap.add_argument("--base", default="clear", help="base BC dataset name")
+    ap.add_argument("--dagger-dirs", default="dagger,dagger_student",
+                    help="comma-separated DAgger subdirs under data/ to fold in")
     ap.add_argument("--epochs", type=int, default=120)
     args = ap.parse_args()
-    distill_student(args.in_w, args.in_h, args.out, teacher_name=args.teacher, epochs=args.epochs)
+    distill_student(args.in_w, args.in_h, args.out, teacher_name=args.teacher,
+                    base=args.base, dagger_dirs=tuple(args.dagger_dirs.split(",")),
+                    epochs=args.epochs)
 
 
 if __name__ == "__main__":

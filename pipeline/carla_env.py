@@ -71,6 +71,35 @@ def set_clear_weather(world):
     world.set_weather(w)
 
 
+def set_weather(world, name):
+    """Apply a weather preset: clear / fog / rain / night. Shared by data
+    collection and evaluation so training and testing use identical presets.
+
+    Every preset sets ALL confounding fields (precipitation, deposits, wetness,
+    fog) explicitly, so a preset is fully self-contained and order-independent.
+    (Otherwise night applied after rain would silently inherit rain's puddles /
+    wet-road sheen, contaminating the "night" condition with leftover rain.)"""
+    if name == "clear":
+        set_clear_weather(world)
+        return
+    w = world.get_weather()
+    if name == "fog":
+        w.cloudiness, w.fog_density, w.fog_distance = 90.0, 70.0, 10.0
+        w.precipitation, w.precipitation_deposits, w.wetness = 0.0, 0.0, 0.0
+        w.sun_altitude_angle = 45.0
+    elif name == "rain":
+        w.cloudiness, w.precipitation, w.precipitation_deposits = 90.0, 85.0, 70.0
+        w.wetness, w.fog_density = 80.0, 5.0
+        w.sun_altitude_angle = 40.0
+    elif name == "night":
+        w.cloudiness, w.precipitation, w.precipitation_deposits = 30.0, 0.0, 0.0
+        w.wetness, w.fog_density = 0.0, 0.0
+        w.sun_altitude_angle = -25.0
+    else:
+        raise ValueError(name)
+    world.set_weather(w)
+
+
 # ── Spawning ─────────────────────────────────────────────────────────────────
 
 def make_transform(spawn):

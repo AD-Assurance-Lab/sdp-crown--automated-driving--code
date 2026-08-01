@@ -33,8 +33,7 @@ from model import CarlaSteeringNet  # noqa: E402
 from train import train_model  # noqa: E402
 
 SPAWNS = {"eastbound": C.SPAWN_EASTBOUND, "westbound": C.SPAWN_WESTBOUND}
-DAGGER_DIR = os.path.join(C.DATASET_DIR, "dagger")
-FIELDS = ["image", "direction", "step", "steer", "steer_rad", "nn_steer",
+FIELDS = ["image", "weather", "direction", "step", "steer", "steer_rad", "nn_steer",
           "cte_m", "speed_mph", "x", "y", "yaw"]
 
 
@@ -46,7 +45,7 @@ def load_model(name, device):
     return m
 
 
-def drive_collect(world, vehicle, img_queue, model, device, direction, round_dir, max_steps):
+def drive_collect(world, vehicle, img_queue, model, device, weather, direction, round_dir, max_steps):
     """Policy drives; every frame is labeled with the route recovery expert and saved.
     Returns (rows, cte_stats). CTE is against the fixed reference route."""
     route = load_route(direction)
@@ -58,7 +57,8 @@ def drive_collect(world, vehicle, img_queue, model, device, direction, round_dir
         world, vehicle, img_queue, speed_ctrl,
         steer_fn=lambda veh: pure_pursuit_route(route, veh.get_transform())[0],
     )
-    frames_dir = os.path.join(round_dir, direction, "frames")
+    seg = os.path.join(weather, direction)
+    frames_dir = os.path.join(round_dir, seg, "frames")
     os.makedirs(frames_dir, exist_ok=True)
     start = carla.Location(x=SPAWNS[direction]["x"], y=SPAWNS[direction]["y"],
                            z=SPAWNS[direction]["z"])
@@ -82,10 +82,10 @@ def drive_collect(world, vehicle, img_queue, model, device, direction, round_dir
         cte, hint = signed_cte_route(route, loc.x, loc.y, hint)
         exp_steer, exp_rad, _ = pure_pursuit_route(route, tf, hint)   # LABEL
 
-        rel = os.path.join(direction, "frames", f"{step:05d}.png")
+        rel = os.path.join(seg, "frames", f"{step:05d}.png")
         cv2.imwrite(os.path.join(round_dir, rel), bgr)
         rows.append(dict(
-            image=rel, direction=direction, step=step,
+            image=rel, weather=weather, direction=direction, step=step,
             steer=exp_steer, steer_rad=exp_rad, nn_steer=nn_steer,
             cte_m=cte, speed_mph=env.speed_mph(vehicle), x=loc.x, y=loc.y, yaw=tf.rotation.yaw,
         ))
@@ -123,9 +123,16 @@ def main():
     ap.add_argument("--epochs", type=int, default=120)
     ap.add_argument("--max-steps", type=int, default=2500)
     ap.add_argument("--out-prefix", default="steering_dagger")
+    ap.add_argument("--weathers", default="clear",
+                    help="comma-separated weather presets to drive/collect each round")
+    ap.add_argument("--dagger-dir", default="dagger",
+                    help="subdir under data/ for this run's rounds (use a distinct name "
+                         "per model, e.g. dagger_mixed, so rounds don't collide)")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    weathers = args.weathers.split(",")
+    dagger_dir = os.path.join(C.DATASET_DIR, args.dagger_dir)
     manifests = [os.path.join(C.DATASET_DIR, args.base, "manifest.csv")]
     model = load_model(args.init, device)
     current = args.init
@@ -133,26 +140,27 @@ def main():
     client = env.connect()
     world = env.load_town04(client)
     original = env.enable_sync_mode(world)
-    env.set_clear_weather(world)
     vehicle = env.spawn_vehicle(world, C.SPAWN_EASTBOUND)
     camera, img_queue = env.spawn_camera(world, vehicle)
 
     history = []
     try:
         for r in range(args.rounds + 1):
-            round_dir = os.path.join(DAGGER_DIR, f"round{r:02d}")
+            round_dir = os.path.join(dagger_dir, f"round{r:02d}")
             print(f"\n{'#'*64}\n# DAgger round {r} — evaluating policy '{current}'\n{'#'*64}")
             rows, passed = [], True
-            for d in ["eastbound", "westbound"]:
-                drows, st = drive_collect(world, vehicle, img_queue, model, device,
-                                          d, round_dir, args.max_steps)
-                rows += drows
-                ob = st.get("frac_over_budget", 1) * 100
-                mx = st.get("max_abs_cte_m", 0) * C.M_TO_FT
-                print(f"  [{d}] over-budget={ob:5.1f}%  max|CTE|={mx:5.2f}ft  "
-                      f"-> {'PASS' if st.get('passed') else 'FAIL'}")
-                if not st.get("passed"):
-                    passed = False
+            for weather in weathers:
+                env.set_weather(world, weather)
+                for d in ["eastbound", "westbound"]:
+                    drows, st = drive_collect(world, vehicle, img_queue, model, device,
+                                              weather, d, round_dir, args.max_steps)
+                    rows += drows
+                    ob = st.get("frac_over_budget", 1) * 100
+                    mx = st.get("max_abs_cte_m", 0) * C.M_TO_FT
+                    print(f"  [{weather}/{d}] over-budget={ob:5.1f}%  max|CTE|={mx:5.2f}ft  "
+                          f"-> {'PASS' if st.get('passed') else 'FAIL'}")
+                    if not st.get("passed"):
+                        passed = False
             mpath = write_manifest(round_dir, rows)
             history.append((r, current, passed))
 
