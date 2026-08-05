@@ -97,16 +97,12 @@ frame relabeled), aggregates, and retrains.
   phases (a server up for many hours can stall). To kill it without the pattern
   matching this shell, use a variable: `P=Carla; pkill -9 -f "${P}UE4"`.
 
-## Reference baseline (read-only)
-`ROADMAP.md` holds expected outcomes and experimental baselines. **Do not edit** it.
-
 ## Environment setup
 Deps pinned in `requirements.txt` (Python 3.10, CUDA 12.1, RTX-class GPU). The
 CARLA 0.9.16 client wheel and CUDA PyTorch are installed separately — see the
 header comments in `requirements.txt`.
 
-## Procedural skills
-Step-by-step helpers live in `.claude/skills/` (`sdp_crown_verification`,
-`carla_data_collection`, `carla_closed_loop_testing`). These predate the clean
-`pipeline/` rebuild — treat `README.md` + the pipeline scripts as authoritative and
-update a skill if you rely on it.
+## Authoritative docs
+`README.md` (reproduction) and the itsc-paper `working_methodology.md` (full method,
+results, future work §17) are the source of truth. Keep them in sync with the
+pipeline when you change it.

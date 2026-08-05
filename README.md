@@ -14,6 +14,24 @@ The full methodology, results, and tables live in the paper supplement
 
 ---
 
+## Project status & handoff
+
+**This work is complete and tagged `v1.0.0`.** The two milestones (M1 clear-weather
+model, M2 mixed/photometric model) are implemented in `pipeline/`, validated in
+CARLA, formally verified with SDP-CROWN, and documented for reproduction (this
+README + the itsc-paper methodology supplement).
+
+**What happens next:** a manuscript is being drafted in the companion **itsc-paper**
+repository and will be posted to **arXiv first** as a preprint. The code (this repo)
+and the paper draft are then **handed to a student**, who will extend and update
+them toward a **journal and/or IEEE ITSC** submission. If you are that student (or a
+new contributor): start here (§ Reproduce), read the methodology supplement end to
+end, and see **§17 of the supplement for the open future-work agenda** (capped-
+severity retrain, input-resolution scaling, rain/snow composite disturbance models,
+friction/reachability, and more). `CLAUDE.md` holds the working conventions.
+
+---
+
 ## What we show
 
 - **Clear-only model fails weather, and verification predicts it.** A steering model
@@ -43,7 +61,6 @@ pipeline/            the reproducible pipeline (self-contained; see below)
 auto_LiRPA/          the SDP-CROWN verifier (dependency; imported by verify.py)
 datasets/ACDC/       real-world clear/adverse pairs used to calibrate ε-bounds
 requirements.txt     pinned deps (Python 3.10, CUDA 12.1, RTX-class GPU)
-ROADMAP.md           expected-outcomes baseline (read-only reference)
 ```
 Regenerable artifacts — frame data (`pipeline/data/`), model weights
 (`pipeline/checkpoints/`), and results (`pipeline/results/`) — are gitignored.
