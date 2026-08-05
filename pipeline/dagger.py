@@ -121,6 +121,8 @@ def main():
     ap.add_argument("--init", default="steering_bc_baseline", help="initial policy checkpoint")
     ap.add_argument("--rounds", type=int, default=6, help="max DAgger retrains")
     ap.add_argument("--epochs", type=int, default=120)
+    ap.add_argument("--lr", type=float, default=5e-4,
+                    help="LR for warm-start retrains (gentle fine-tune from prior round)")
     ap.add_argument("--max-steps", type=int, default=2500)
     ap.add_argument("--out-prefix", default="steering_dagger")
     ap.add_argument("--weathers", default="clear",
@@ -174,8 +176,9 @@ def main():
 
             manifests.append(mpath)
             new = f"{args.out_prefix}_r{r:02d}"
-            print(f"  aggregating {len(manifests)} manifests, retraining -> {new}")
-            train_model(manifests, new, epochs=args.epochs, balance=True, quiet=True)
+            print(f"  aggregating {len(manifests)} manifests, warm-start from '{current}' -> {new}")
+            train_model(manifests, new, epochs=args.epochs, balance=True, quiet=True,
+                        weathers=weathers, init_from=current, lr=args.lr)
             model = load_model(new, device)
             current = new
     finally:

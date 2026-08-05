@@ -104,12 +104,19 @@ def _mse(model, loader, device):
 
 def distill_student(in_w, in_h, out_name, teacher_name="steering_dagger_r02",
                     base="clear", dagger_dirs=("dagger", "dagger_student"),
+                    weathers=None, channels=(8, 16, 16), fc=32, init_from=None,
                     epochs=120, batch_size=64, lr=1e-3, patience=20,
                     device=None, quiet=False):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(0)
     os.makedirs(C.CHECKPOINT_DIR, exist_ok=True)
     _, rows = load_manifests(aggregated_manifests(base, dagger_dirs))
+    if weathers:  # restrict distillation to a subset of conditions (e.g. photometric only)
+        keep = set(weathers)
+        n0 = len(rows)
+        rows = [r for r in rows if r.get("weather") in keep]
+        if not quiet:
+            print(f"weather filter {sorted(keep)}: kept {len(rows)}/{n0} frames")
     targets = teacher_targets(rows, teacher_name, device)
     tr_idx, va_idx = block_split(len(rows), val_frac=0.15, block=50, seed=0)
 
@@ -118,11 +125,16 @@ def distill_student(in_w, in_h, out_name, teacher_name="steering_dagger_r02",
     tl = DataLoader(tr, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
     vl = DataLoader(va, batch_size=256, shuffle=False, num_workers=0, pin_memory=True)
 
-    student = StudentNet(in_h, in_w).to(device)
+    student = StudentNet(in_h, in_w, channels=channels, fc=fc).to(device)
+    if init_from:  # warm-start (fine-tune) from a prior student; stabilizes multi-condition re-distill
+        student.load_state_dict(torch.load(os.path.join(C.CHECKPOINT_DIR, f"{init_from}.pth"),
+                                           map_location=device))
+        if not quiet:
+            print(f"warm-start from {init_from} (lr={lr})")
     nrelu = student.num_relu_neurons()
     if not quiet:
-        print(f"student {in_w}x{in_h}: {nrelu} ReLU neurons, {sum(p.numel() for p in student.parameters())} params "
-              f"| train={len(tr_idx)} val={len(va_idx)}")
+        print(f"student {in_w}x{in_h} channels={channels} fc={fc}: {nrelu} ReLU neurons, "
+              f"{sum(p.numel() for p in student.parameters())} params | train={len(tr_idx)} val={len(va_idx)}")
     opt = torch.optim.Adam(student.parameters(), lr=lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5, patience=8)
 
@@ -157,10 +169,17 @@ def main():
     ap.add_argument("--base", default="clear", help="base BC dataset name")
     ap.add_argument("--dagger-dirs", default="dagger,dagger_student",
                     help="comma-separated DAgger subdirs under data/ to fold in")
+    ap.add_argument("--weathers", default=None,
+                    help="restrict distillation to these conditions (e.g. clear,fog,night)")
+    ap.add_argument("--channels", default="8,16,16",
+                    help="conv channel widths (capacity lever at fixed resolution)")
+    ap.add_argument("--fc", type=int, default=32, help="FC hidden width")
     ap.add_argument("--epochs", type=int, default=120)
     args = ap.parse_args()
     distill_student(args.in_w, args.in_h, args.out, teacher_name=args.teacher,
                     base=args.base, dagger_dirs=tuple(args.dagger_dirs.split(",")),
+                    weathers=(args.weathers.split(",") if args.weathers else None),
+                    channels=tuple(int(x) for x in args.channels.split(",")), fc=args.fc,
                     epochs=args.epochs)
 
 

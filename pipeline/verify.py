@@ -128,11 +128,14 @@ def main():
     ap.add_argument("--dataset", default="clear")
     ap.add_argument("--corridor", type=float, default=None,
                     help="override steering corridor (norm); default = config's ±2.88deg")
+    ap.add_argument("--channels", default="8,16,16", help="conv widths (must match the trained student)")
+    ap.add_argument("--fc", type=int, default=32, help="FC width (must match the trained student)")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     corridor = args.corridor if args.corridor is not None else C.STEER_CORRIDOR_NORM
-    base = StudentNet(args.h, args.w).to(device)
+    base = StudentNet(args.h, args.w, channels=tuple(int(x) for x in args.channels.split(",")),
+                      fc=args.fc).to(device)
     base.load_state_dict(torch.load(os.path.join(C.CHECKPOINT_DIR, f"{args.student}.pth"),
                                     map_location=device))
     base.eval()

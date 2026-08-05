@@ -1,91 +1,163 @@
-# SDP-CROWN: Autonomous Steering Robustness Verification & Validation
+# SDP-CROWN — Formal Verification meets Closed-Loop Validation for E2E Steering
 
-This repository extends the **SDP-CROWN** (Semidefinite Programming based CROWN) formal neural network verifier to safety-critical autonomous driving regression tasks. Specifically, it enables physical perturbation verification and closed-loop validation for end-to-end steering controllers (`CarlaSteeringNet`) under adverse weather conditions (rain, fog, night, snow).
+This repository verifies and validates end-to-end camera→steering controllers under
+adverse weather, using the **SDP-CROWN** neural-network verifier
+([auto_LiRPA](auto_LiRPA/)) *together with* closed-loop **CARLA** simulation. The
+central question: **can formal verification, run outside the simulator, predict
+closed-loop safety outcomes?** The answer we demonstrate is *yes* — and, for one
+condition, verification catches a worst-case failure that nominal simulation
+declares safe.
 
-Semantic weather perturbations are modeled as parameterized **Semantic Perturbation Layers** (controlling contrast scaling $\epsilon_c$ and brightness bias $\epsilon_b$), calibrated directly from real-world GPS-synchronized driving scenes in the **ACDC dataset**.
-
----
-
-## 🎯 Active Project Objective: Safe Closed-Loop & Formal Verification
-Our goal is to train a single, verifier-friendly end-to-end steering controller that simultaneously:
-1.  **Passes closed-loop simulator validation** (driving at least a full half-lap on the Town04 highway without lane departures).
-2.  **Formally certifies safe steering bounds** under worst-case weather perturbations using **SDP-CROWN** (steering output deviation $\le \pm 0.1$ radians).
-
----
-
-## 🛑 Coding Constraints & Controller Specifications
-To balance verifiability and closed-loop control stability, all verifier-friendly controllers must adhere to these specifications:
-*   **Architecture (`CarlaSteeringNet`)**: Features 4 Convolutional layers followed by 3 Fully-Connected layers.
-*   **No Dropout, No BatchNorm**: These layers introduce interval bounds explosion or verification stochasticity. Fusing BatchNorm is allowed for expert baseline models, but verifier-friendly networks must omit them natively.
-*   **Resolution & Input Prep**: Inputs are $120 \times 90$ pixels (or $160 \times 120$ for high-detail tests), cropped to remove the sky and hood, and normalized to `[0.0, 1.0]`.
-*   **No Steering Multiplier**: Steering angle predictions map directly to CARLA control inputs without steering gain multipliers.
+The full methodology, results, and tables live in the paper supplement
+[`working_methodology.md`](../sdp-crown--automated-driving--itsc-paper/working_methodology.md)
+(itsc-paper repo). This README is the standalone reproduction guide.
 
 ---
 
-## 🧪 Data Collection & DAgger-Lite Protocol
-To solve the covariate shift problem (compounding errors causing off-road drift) while keeping scene entropy low:
-1.  **Map & Lane Trajectory**: Both data collection and closed-loop testing must always be run in **CARLA Town04 (Epic Mode)**. The ego vehicle drives in the **second-to-left lane** of the highway.
-2.  **Longitudinal Speed**: The ego vehicle's longitudinal speed must be strictly fixed at **20 mph** always (8.94 m/s target using Traffic Manager or PID throttle/brake control) across all data collection, DAgger recovery, and closed-loop testing to remove velocity as a variable.
-3.  **Entropy Reduction (2 x Half Laps)**: We collect exactly **2 x half laps** of data (Stage 1 CW loop around East curve, spawning at `x=-357.1, y=30.0, z=0.5, yaw=0.0`; and Stage 2 CCW loop around West curve, spawning at `x=-396.8, y=12.8, z=0.5, yaw=180.0`), collected sequentially in a single run. Urban intersections and bridges are excluded to keep background scene complexity low.
-4.  **DAgger-Lite Loop**: Interactive rollouts are run where the policy drives, a background autopilot calculates recovery steering corrections, and recovery frames are aggregated back into the training dataset.
-5.  **Turn Balancing**: Autopilot straight-driving frames ($|\text{steer}| \le 0.01$) are downsampled during dataset collection to:
-    $$\text{Target Straight} = 0.6 \times \max(N_{left}, N_{right})$$
-6.  **Required Frame Volumes**:
-    *   **Clear-Weather Model**: 5,000+ balanced training frames.
-    *   **Mixed-Weather Model**: 30,000+ balanced training frames. (Collect clear DAgger-Lite data, then supplement by repeating collection in CARLA Fog, Rain, and Night).
+## What we show
+
+- **Clear-only model fails weather, and verification predicts it.** A steering model
+  trained only on clear weather departs the lane under fog/rain/night; SDP-CROWN,
+  using ACDC-calibrated perturbation bounds, flags those failures *without
+  simulation*.
+- **A weather-trained model reconciles verification with simulation.** A
+  mixed/photometric model (trained on clear+fog+night) drives those conditions in
+  closed loop, and per-condition:
+  - **fog** — high certificate, concretely robust, drives under worst-case ε →
+    verification and simulation **agree**.
+  - **night** — drives *nominally*, but verification (per-frame + concrete grid +
+    worst-case-ε-in-closed-loop) shows genuine fragility, and the car **actually
+    departs** under worst-case ε → verification catches a risk nominal simulation
+    **misses**.
+- **Scope (honest).** The affine perturbation model is valid for *photometric*
+  disturbances (**fog, night**). **Rain and snow are non-affine** (localized /
+  composite; snow is also unrenderable in CARLA) and are **future work** — see the
+  supplement §13, §17.
 
 ---
 
-## 🛠️ The Verification Engine: Patches-Mode SDP-CROWN
-Custom elementwise weather layers trigger stride-2 `RuntimeError`s in auto_LiRPA's memory-efficient `'patches'` mode.
-*   **The Solution**: We reformulate the weather perturbation layer as a standard **Linear Layer** (`nn.Linear`) mapping the 2D perturbation parameters $[\epsilon_c, \epsilon_b]$ to the flattened $14,400$ image pixels:
-    $$\text{Weight} = \begin{bmatrix} x_0 \odot M & M \end{bmatrix}, \quad \text{Bias} = x_0$$
-    where $x_0$ is the nominal image and $M$ is the spatial road mask.
-*   **The Result**: Because `nn.Linear` is standard, auto_LiRPA propagates bounds backward past convolutions in `'patches'` mode natively. This bypasses the $14400 \times 14400$ dense matrix flattening, dropping VRAM usage from **>12GB to ~2.2GB** and allowing GPU-accelerated SDP-CROWN sweeps to run in seconds.
+## Repository layout
+
+```
+pipeline/            the reproducible pipeline (self-contained; see below)
+auto_LiRPA/          the SDP-CROWN verifier (dependency; imported by verify.py)
+datasets/ACDC/       real-world clear/adverse pairs used to calibrate ε-bounds
+requirements.txt     pinned deps (Python 3.10, CUDA 12.1, RTX-class GPU)
+ROADMAP.md           expected-outcomes baseline (read-only reference)
+```
+Regenerable artifacts — frame data (`pipeline/data/`), model weights
+(`pipeline/checkpoints/`), and results (`pipeline/results/`) — are gitignored.
+Reference routes rebuild from `pipeline/build_routes.py`.
+
+### The `pipeline/` package
+| File | Role |
+|------|------|
+| `config.py` | all constants (speed, dt, camera, **derived** safety budgets) |
+| `carla_env.py` | CARLA connect/sync/spawn, physics-honest PI speed control, weather presets |
+| `route.py`, `build_routes.py` | fixed reference centerline + signed-CTE + pure-pursuit |
+| `collect_data.py` | oracle-driven data collection (`--weathers`) |
+| `model.py` / `expert.py` | PilotNet teacher; `student.py` verifiable StudentNet |
+| `train.py` | behavior cloning / aggregated retrain (`--weathers`, warm-start `init_from`) |
+| `dagger.py`, `dagger_student.py` | teacher- and student-DAgger (`--weathers`, `--lr` warm-start) |
+| `distill.py` | knowledge distillation teacher→student (`--channels/--fc` width, `--weathers`) |
+| `eval_student.py` | closed-loop test (rendered weather, or `--affine` ε-in-loop) |
+| `verify.py` | SDP-CROWN per-frame certificate (semantic perturbation layer) |
+| `reachability.py`, `rollout.py` | offline δ(position,ε) vs τ; verifier-in-the-loop rollout |
+| `weather_bounds.py` | ACDC + CARLA ε-bounds (shared by verifier and closed-loop test) |
 
 ---
 
-## ⚙️ Alternative Strategy: Knowledge Distillation (KD)
-If a verifier-friendly network struggles to learn stable closed-loop steering on the Town04 loop:
-1.  Train a high-capacity "Expert" model (`CarlaSteeringExpertNet` with BatchNorm and Dropout) until it achieves stable closed-loop driving.
-2.  Use **Knowledge Distillation** to transfer the expert's control logic into the lightweight `CarlaSteeringNet` by forcing it to minimize MSE loss against the expert's steering logit predictions.
-3.  Verify the distilled `CarlaSteeringNet` natively.
+## Method in brief
+
+- **Task.** Town04 highway loop (~3.04 km, both directions), Tesla Model 3, fixed
+  **20 mph**, 5 Hz. Only lateral (steering) control is learned.
+- **Labels.** Pure pursuit on a **fixed reference centerline** — not the CARLA
+  autopilot PID (which oscillates and gets cloned). CTE is measured to that
+  centerline (immune to lane-snapping).
+- **Safety budgets are *derived*, not assumed.** CTE budget
+  `(3.500−2.164)/2 = 0.668 m = 2.19 ft`; per-frame steering corridor
+  `Δδ = 2·L·CTE_budget/(v²T²) = 0.050 rad = 2.88° = 0.041` normalized (T=1 s).
+- **Models.** PilotNet teacher (~107k ReLU) → distilled **verifier-friendly**
+  StudentNet (ReLU-only, no BatchNorm/Dropout), sized for SDP-CROWN. The mixed
+  model uses a 2×-width student (10,304 ReLU).
+- **Weather = affine ε.** A semantic perturbation layer (`nn.Linear`,
+  `Weight=[x₀⊙M | M]`, `Bias=x₀`) maps `[ε_c, ε_b]` (contrast, brightness) to the
+  image; bounds propagate under IBP/CROWN/α-CROWN/**SDP-CROWN**. ε-bounds are
+  calibrated from the real-world **ACDC** dataset; CARLA's default presets are
+  deliberately noted as *harsher* than real weather (supplement §13).
 
 ---
 
-## 💻 Running Commands Reference
+## Setup
 
-### 1. Model Training with Weather Augmentation:
+- CARLA **0.9.16** at Town04, `-quality-level=Epic` (launch on its RPC port 2000).
+- Python 3.10, CUDA 12.1; install `requirements.txt` (the CARLA client wheel and
+  CUDA PyTorch are installed separately — see the file header).
+- Verify the environment: `python -c "import carla, torch; print(torch.cuda.is_available())"`.
+
+## Reproduce
+
+Run from the repo root with CARLA up on Town04. Close CARLA during pure-training
+steps (BC/distill) to free the GPU; keep it up for the interleaved DAgger loops.
+
 ```bash
-# Trains on clear dataset, dynamically applying ACDC weather scaling during training
-./venv_sdp/bin/python tools/train_carla_model.py \
-    --mode clear \
-    --weather-aug \
-    --model-type CarlaSteeringNet \
-    --epochs 30
+# 0. Reference routes (once)
+python pipeline/build_routes.py
+
+# 1. Mixed-weather data (oracle drives; ~13.5k frames)
+python pipeline/collect_data.py --dataset mixed --weathers clear,fog,rain,night --laps 1 --direction both
+
+# 2. Photometric teacher: BC (clear/fog/night) then warm-start DAgger -> _r04
+python pipeline/train.py  --dataset mixed --weathers clear,fog,night --out steering_bc_photometric
+python pipeline/dagger.py --base mixed --init steering_bc_photometric --weathers clear,fog,night \
+       --dagger-dir dagger_photometric --out-prefix steering_dagger_photometric --rounds 6 --lr 5e-4
+
+# 3. Verifiable student: distill at 2x width, then warm-start student-DAgger -> _r04 (PASS)
+python pipeline/distill.py --in-w 84 --in-h 28 --out student_photometric_w20_84x28 \
+       --teacher steering_dagger_photometric_r04 --base mixed --dagger-dirs dagger_photometric \
+       --weathers clear,fog,night --channels 16,32,32 --fc 64
+python pipeline/dagger_student.py --student student_photometric_w20_84x28 --w 84 --h 28 \
+       --channels 16,32,32 --fc 64 --weathers clear,fog,night --dagger-dir dagger_student_w20 \
+       --teacher steering_dagger_photometric_r04 --base mixed \
+       --distill-dirs dagger_photometric,dagger_student_w20 --rounds 5 --lr 5e-4
+
+# 4. Closed-loop (nominal rendered weather)
+python pipeline/eval_student.py --student student_photometric_w20_84x28_dagger_r04 \
+       --w 84 --h 28 --channels 16,32,32 --fc 64 --weather night --direction both
+
+# 5. Formal verification (SDP-CROWN, ACDC eps)
+python pipeline/verify.py --student student_photometric_w20_84x28_dagger_r04 \
+       --w 84 --h 28 --channels 16,32,32 --fc 64 --condition night --bounds acdc \
+       --method SDP-CROWN --corridor 0.0411
+
+# 6. Reconciliation: worst-case affine eps in closed loop (clear render + injected eps)
+python pipeline/eval_student.py --student student_photometric_w20_84x28_dagger_r04 \
+       --w 84 --h 28 --channels 16,32,32 --fc 64 --affine acdc --acond night --direction both
 ```
 
-### 2. Full Lap Closed-Loop Simulator Evaluation:
-```bash
-# Spawns vehicle at frame 0 (right after intersection) and runs a full lap (960 frames)
-./venv_sdp/bin/python tools/test_carla_model.py \
-    --model-type CarlaSteeringNet \
-    --model-path models/carla_small_mixed_aug.pth \
-    --map Town04 \
-    --weather rain \
-    --num-frames 960 \
-    --start-frame 0
-```
+Expected (2× student, supplement §15): **fog** certifies ~95% and drives under
+worst-case ε; **night** drives nominally but certifies ~50%, is concretely
+non-robust (34/212 frames), and **departs** under worst-case ε in closed loop.
 
-### 3. SDP-CROWN Formal Verification Sweep:
-```bash
-# Verifies safety bounds on a sequence of 50 continuous frames
-./venv_sdp/bin/python verify_steering.py \
-    --model_type CarlaSteeringNet \
-    --weights_path models/carla_small_mixed_aug.pth \
-    --weather rain \
-    --method SDP-CROWN \
-    --device cuda \
-    --num_frames 50 \
-    --iterations 20
-```
+The clear-only model and its M1–M3 story reproduce with `--dataset clear` and the
+`--weather {fog,rain,night}` closed-loop / `--bounds {acdc,carla}` verification
+paths (supplement §§4–11).
+
+---
+
+## Notes for reproduction
+
+- **Weather presets are order-independent** — each preset sets all confounding
+  fields explicitly, so collecting "night after rain" does not inherit rain's wet
+  road (supplement §12).
+- **Multi-condition DAgger needs warm-start** (`--lr 5e-4`, fine-tune from the prior
+  round). From-scratch retraining diverges on multi-weather data (supplement §14).
+- **Width, not resolution, is the capacity lever** for the verifiable net — same
+  perturbation dimension, cheaper certification (supplement §14).
+- **CARLA hygiene.** Don't leave a server running when done; a single server that
+  runs for many hours can stall — cycle it between long phases.
+
+## Citation
+
+Accompanies the IEEE ITSC paper on certifying steering safety margins under weather.
+See the itsc-paper repository for the manuscript and full methodology.

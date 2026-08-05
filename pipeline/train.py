@@ -43,14 +43,26 @@ def _evaluate(model, loader, device):
 
 def train_model(manifest_paths, out, epochs=120, batch_size=64, lr=1e-3,
                 weight_decay=1e-5, patience=20, balance=False, augment=False,
-                shift_max_px=40, shift_k=0.0015, device=None, quiet=False):
-    """Train from scratch on the aggregated manifests. Returns best val MSE."""
+                shift_max_px=40, shift_k=0.0015, weathers=None, init_from=None,
+                device=None, quiet=False):
+    """Train on the aggregated manifests. With init_from=<checkpoint name>, warm-start
+    from those weights (DAgger fine-tunes each round from the prior policy instead of
+    re-training from scratch, which destabilizes on multi-condition aggregates)."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(0)
     os.makedirs(C.CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(C.RESULTS_DIR, exist_ok=True)
 
     base, rows = load_manifests(manifest_paths)
+    if weathers and any("weather" in r for r in rows):  # restrict to a subset of conditions
+        keep = set(weathers)                             # (e.g. photometric: clear/fog/night)
+        n0 = len(rows)
+        rows = [r for r in rows if r.get("weather") in keep]
+        if not quiet:
+            print(f"weather filter {sorted(keep)}: kept {len(rows)}/{n0} frames")
+    elif weathers and not quiet:
+        print(f"weather filter {sorted(set(weathers))} requested but data has no weather "
+              f"column (pre-dates weather tracking); using all {len(rows)} frames")
     tr_idx, va_idx = block_split(len(rows), val_frac=0.15, block=50, seed=0)
     if balance:
         tr_idx = balance_straight(rows, tr_idx)
@@ -67,6 +79,11 @@ def train_model(manifest_paths, out, epochs=120, batch_size=64, lr=1e-3,
     vl = DataLoader(va, batch_size=256, shuffle=False, num_workers=0, pin_memory=True)
 
     model = CarlaSteeringNet().to(device)
+    if init_from:  # warm-start (fine-tune) from a prior checkpoint
+        wpath = os.path.join(C.CHECKPOINT_DIR, f"{init_from}.pth")
+        model.load_state_dict(torch.load(wpath, map_location=device))
+        if not quiet:
+            print(f"warm-start from {init_from} (lr={lr})")
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5, patience=8)
 
@@ -129,13 +146,16 @@ def main():
     ap.add_argument("--patience", type=int, default=20)
     ap.add_argument("--balance", action="store_true")
     ap.add_argument("--augment", action="store_true")
+    ap.add_argument("--weathers", default=None,
+                    help="restrict training to these conditions (e.g. clear,fog,night)")
     ap.add_argument("--out", default="steering_bc_baseline")
     args = ap.parse_args()
 
     manifests = args.manifests or [os.path.join(C.DATASET_DIR, args.dataset, "manifest.csv")]
     train_model(manifests, args.out, epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, weight_decay=args.weight_decay, patience=args.patience,
-                balance=args.balance, augment=args.augment)
+                balance=args.balance, augment=args.augment,
+                weathers=(args.weathers.split(",") if args.weathers else None))
 
 
 if __name__ == "__main__":

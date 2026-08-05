@@ -3,109 +3,110 @@
 Guidance for Claude Code (and any agent) working in this repository. This is the
 single source of truth for project rules; it replaces the former `AGENTS.md`.
 
-## Project objective
-Mathematically quantify the effect of environmental disturbances (rain, fog,
-night, snow) on end-to-end AI steering models using **SDP-CROWN**, *without*
-running physical simulations. Weather disturbances are modeled as linear pixel
-modifications (affine contrast/brightness transforms) calibrated from the
-real-world **ACDC dataset**, then validated against closed-loop **CARLA** runs.
+**The working code is the `pipeline/` package.** `README.md` (reproduction guide)
+and the paper supplement `working_methodology.md` (in the itsc-paper repo) are the
+authoritative descriptions of what is actually implemented and validated. If this
+file and the pipeline ever disagree, the pipeline + README win.
 
-Two properties the trained controller must satisfy simultaneously:
-1. Pass closed-loop validation (drive ≥ a full half-lap of the Town04 highway
-   with no lane departures).
-2. Formally certify safe steering bounds under worst-case weather perturbations
-   (steering output deviation ≤ ±0.1 rad).
+## Project objective
+Quantify the effect of environmental disturbances on end-to-end AI steering models
+using **SDP-CROWN**, and show the formal results *reconcile with* closed-loop
+**CARLA** simulation. Weather is modeled as an affine pixel transform (contrast
+ε_c, brightness ε_b) calibrated from the real-world **ACDC** dataset. The controller
+must simultaneously (1) pass closed-loop validation (drive the Town04 loop within
+the CTE budget) and (2) formally certify safe steering under the ACDC ε-box.
+
+**Weather-model scope (important).** The affine model is valid for *photometric*
+disturbances — **fog, night**. **Rain and snow are non-affine** (localized /
+composite; snow is also unrenderable in CARLA) and are **future work**. Do not
+report rain/snow as validated results (supplement §13).
 
 ## Core guideline: the performance–verifiability tradeoff
-- **Do not over-optimize simulation.** No high-capacity layers, BatchNorm,
-  Dropout, or complex architectures (e.g. ResNet). They cause interval-bounds
-  explosion and make formal verification intractable.
-- **Do not over-optimize verifiability.** Do not collapse to a trivial/shallow
-  linear controller just for tight bounds — the model must still navigate the
-  Town04 highway curves in closed loop.
-- The small `CarlaSteeringNet` (120×90, or 160×120 for high-res experiments) is
-  the target sweet spot.
+- **Do not over-optimize simulation.** No BatchNorm, Dropout, or high-capacity /
+  complex architectures (ResNet etc.) in the verifiable net — they cause
+  interval-bounds explosion and make verification intractable.
+- **Do not over-optimize verifiability.** Don't collapse to a trivial linear
+  controller for tight bounds — it must still drive the Town04 curves closed-loop.
+- **Width, not resolution, is the capacity lever** for the verifiable student:
+  width adds parameters at a fixed input-perturbation dimension (cheaper to verify);
+  resolution enlarges the ε-box the verifier must bound. Sweep width when capacity
+  is short (supplement §14).
 
-## Network architecture constraints (`CarlaSteeringNet`)
-- **Verifier-friendly only:** no Dropout, no BatchNorm. (BatchNorm fusion is
-  allowed only for expert baseline models, not verifier-friendly nets.)
-- **Architecture:** 4 conv layers + 3 fully-connected layers.
-- **Resolution:** base 120×90 (or 160×120 for high-res). Inputs normalized to
-  `[0.0, 1.0]`.
-- **Cropping:** crop raw frames to remove sky and vehicle hood (top 180px,
-  bottom 80px) before resizing.
-- **No steering multiplier:** predicted steering maps directly to CARLA controls
-  (`steer = pred_steer`), no scaling gain.
+## Networks
+- **Teacher (`model.py`, PilotNet-class):** 5 conv + 4 FC, ReLU-only, ~107k ReLU,
+  input 200×66. Used only as a distillation source (too large to verify).
+- **Verifiable student (`student.py`, `StudentNet`):** small ReLU-only CNN
+  (3 strided conv + 2 FC), **no BatchNorm/Dropout**. Input resolution and conv/FC
+  **width** are constructor parameters. Clear model: 84×28, 5,152 ReLU. Mixed
+  (photometric) model: 84×28 at 2× width (`channels=(16,32,32), fc=64`), 10,304 ReLU.
+- **ROI crop from ground-truth segmentation:** road occupies rows [240:450], full
+  width (measured over 3,390 seg frames). Crop tight to this so lanes survive
+  downsampling. Inputs normalized to `[0,1]`. **No steering multiplier** —
+  `steer = pred_steer`.
 
 ## Closed-loop data collection & simulation
-- **Environment:** always CARLA **Town04 (Epic Mode)** (`-quality-level=Epic`)
-  for both data collection and testing.
-- **Longitudinal speed:** strictly fixed at **20 mph** (8.94 m/s target) across
-  all collection, DAgger recovery, and testing runs — removes velocity as a
-  variable.
-- **Lane:** ego drives the **second-to-left lane**, avoiding urban intersections
-  and bridges to keep background scene variation low.
-- **Testing/eval:** spawn right after the intersection at the start of the
-  highway loop (`--start-frame 0`, Location `x=-357.1, y=30.0, z=0.5`, Yaw
-  `0.0`); evaluate the full lap. Mid-track / curve-only evaluations are removed.
-- **Training collection:** exactly **2 × half laps**, collected sequentially in
-  one run — Stage 1 CW around the East curve (spawn `x=-357.1, y=30.0, z=0.5,
-  yaw=0.0`); Stage 2 CCW around the West curve (spawn `x=-396.8, y=12.8, z=0.5,
-  yaw=180.0`).
+- **Environment:** always CARLA **Town04 (Epic Mode)** (`-quality-level=Epic`).
+- **Longitudinal speed:** fixed **20 mph** (8.94 m/s) via the physics-honest PI
+  throttle/brake controller (`carla_env.SpeedController`) — never a velocity
+  override (that corrupts the lateral dynamics the CTE measures).
+- **Labels & CTE:** **pure pursuit on a fixed reference centerline**
+  (`route.py`/`build_routes.py`) — *not* the autopilot PID (it oscillates and gets
+  cloned). CTE is the perpendicular distance to that centerline (immune to CARLA's
+  lane-snapping).
+- **Collection:** `collect_data.py --weathers …` drives the oracle over the loop
+  both directions under each rendered condition. Weather presets are
+  **order-independent** — each sets all confounding fields (precip/deposits/
+  wetness/fog) explicitly, else e.g. night-after-rain inherits rain's wet road.
 
-## Training & dataset volumes
-- **DAgger-Lite** (interactive rollouts with autopilot-derived recovery labels)
-  is the primary strategy for learning curve navigation.
-- **Turn balancing:** downsample straight frames (`|steer| ≤ 0.01`) to
-  `Target Straight = 0.6 × max(N_left, N_right)`.
-- **Volume thresholds:** Clear-weather model ≥ **5,000** balanced frames;
-  Mixed-weather model ≥ **30,000** balanced frames (supplement clear DAgger with
-  collection in CARLA Fog, Rain, and Night).
+## Training recipe (mirror it exactly across models)
+Behavior cloning → **teacher-DAgger** → **knowledge distillation** →
+**student-DAgger**. DAgger uses the pure-pursuit recovery expert (every visited
+frame relabeled), aggregates, and retrains.
+- **Multi-condition DAgger needs warm-start.** From-scratch retraining each round
+  (fine for single-condition/clear) **diverges** on multi-weather data. Fine-tune
+  from the previous round's checkpoint at reduced LR (`dagger*.py --lr 5e-4`, which
+  `train.py`/`distill.py` honor via `init_from`). Supplement §14.
+- **Turn balancing:** downsample straights (`|steer| ≤ 0.01`) via `balance_straight`.
 
-## Known technical memory: auto_LiRPA `patches`-mode stride bug
-On GPU in `'patches'` mode, custom elementwise weather-perturbation layers
-(`x'_ij = x_ij·(1+ε_c) + ε_b`) trigger a `RuntimeError` in `as_strided` /
-`patches_to_matrix` when bounds propagate backward past a stride-2 conv.
+## Safety criteria — derived, not assumed
+- **CTE budget** = (lane 3.500 − vehicle 2.164)/2 = **0.668 m = 2.19 ft**.
+- **Per-frame steering corridor** = 2·L·CTE_budget/(v²T²) = **0.050 rad = 2.88° =
+  0.041 normalized** (T=1 s). This replaces the old arbitrary ±0.1 rad. Note the
+  *closed-loop* stability tolerance is tighter (~0.012, a stability cliff) — the
+  per-frame corridor bounds a single frame; a systematic bias compounds.
 
-**Fix:** reformulate the perturbation layer as a standard `nn.Linear` followed by
-a reshape, with `Weight = [x0 ⊙ M | M]`, `Bias = x0` (x0 = nominal image,
-M = spatial road mask). Because `nn.Linear` is native, auto_LiRPA handles it in
-`'patches'` mode without stride errors (~2.2 GB VRAM, runs in seconds).
-
-## Fallback strategies (use ONLY if DAgger-Lite stalls)
-1. **Shift augmentation:** horizontal translation of clear-weather frames.
-   ⚠️ Sign correction MUST be additive: `steer = steer + dx * 0.003`.
-   Subtraction teaches positive feedback for errors (steering away from center).
-2. **Knowledge distillation:** if `CarlaSteeringNet` can't learn a half-lap,
-   train a larger `CarlaSteeringExpertNet` (with BatchNorm/Dropout) and distill
-   its policy (MSE against expert steering logits) into the verifiable net.
+## Verification
+- **Semantic perturbation layer** (`nn.Linear`, `Weight=[x₀⊙M | M]`, `Bias=x₀`) maps
+  `[ε_c, ε_b]` → image; bound the steering output under IBP/CROWN/α-CROWN/SDP-CROWN.
+- **auto_LiRPA `patches`-mode fix (keep):** the elementwise form
+  `x' = x·(1+ε_c)+ε_b` triggers a stride-2 `as_strided` `RuntimeError`; the
+  `nn.Linear` reformulation above avoids it (~2.2 GB VRAM, seconds/frame).
+- **Cross-checks:** zero-ε returns nominal; SDP-CROWN bounds always contain the
+  concrete grid; tightness order IBP ⊇ CROWN ⊇ α-CROWN ⊇ SDP-CROWN.
+- **Reconciliation** = per-frame certificate + concrete grid + worst-case-ε in
+  closed loop (`eval_student.py --affine`). ε-bounds calibrated to **ACDC**
+  (real-world); CARLA presets are ~4× harsher (supplement §13, §15).
 
 ## Execution discipline
-- **Never trade experimental quality for speed** — do not switch to CPU, lower
-  CARLA graphics quality, or cut training epochs just to finish faster. Long
-  runs are expected.
-- **Warn on long runs:** if a task (training / batch verification) will take
-  > 1 hour, estimate the ETC and warn the user before starting.
-- **Stop for feedback:** after data collection, closed-loop testing, or offline
-  verification sweeps, run the corresponding plotting/post-processing scripts,
-  present the graphs and metrics, and **stop to wait for user feedback** before
-  proceeding.
-- **CARLA resource hygiene:** do not leave the CARLA server running when done.
-  Terminate any server you launched; if it was already running, remind the user
-  to close it (`pkill -f CarlaUE4`).
+- **Never trade experimental quality for speed** — no CPU fallback, no lowered
+  CARLA quality, no cut epochs. Long runs are expected.
+- **Warn on long runs (>1 h):** estimate ETC and warn before starting.
+- **Stop for feedback:** after collection / closed-loop / verification sweeps,
+  present metrics and **stop for user feedback** before proceeding.
+- **CARLA hygiene:** don't leave a server running when done; cycle it between long
+  phases (a server up for many hours can stall). To kill it without the pattern
+  matching this shell, use a variable: `P=Carla; pkill -9 -f "${P}UE4"`.
 
 ## Reference baseline (read-only)
-`ROADMAP.md` holds expected outcomes and experimental baselines. **Do not edit**
-its expected-outcomes table or the roadmap.
+`ROADMAP.md` holds expected outcomes and experimental baselines. **Do not edit** it.
 
 ## Environment setup
-Dependencies are pinned in `requirements.txt` (Python 3.10, CUDA 12.1, RTX 4070).
-The CARLA 0.9.16 client wheel and the CUDA build of PyTorch are installed
-separately — see the header comments in `requirements.txt`.
+Deps pinned in `requirements.txt` (Python 3.10, CUDA 12.1, RTX-class GPU). The
+CARLA 0.9.16 client wheel and CUDA PyTorch are installed separately — see the
+header comments in `requirements.txt`.
 
 ## Procedural skills
-Step-by-step procedures live in `.claude/skills/`:
-- `sdp_crown_verification` — configuring disturbance bounds and running formal
-  CROWN / SDP-CROWN sweeps on GPU.
-- `carla_data_collection` — collecting training data in CARLA.
-- `carla_closed_loop_testing` — closed-loop evaluation runs.
+Step-by-step helpers live in `.claude/skills/` (`sdp_crown_verification`,
+`carla_data_collection`, `carla_closed_loop_testing`). These predate the clean
+`pipeline/` rebuild — treat `README.md` + the pipeline scripts as authoritative and
+update a skill if you rely on it.

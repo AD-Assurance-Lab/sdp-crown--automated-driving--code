@@ -59,10 +59,13 @@ def main():
     ap.add_argument("--tau", type=float, default=0.0125, help="measured stability tolerance")
     ap.add_argument("--stride", type=int, default=5, help="frame subsampling")
     ap.add_argument("--conditions", default="fog,rain,night")
+    ap.add_argument("--channels", default="8,16,16", help="conv widths (must match --student)")
+    ap.add_argument("--fc", type=int, default=32, help="FC width (must match --student)")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = StudentNet(args.h, args.w).to(device)
+    model = StudentNet(args.h, args.w, channels=tuple(int(x) for x in args.channels.split(",")),
+                       fc=args.fc).to(device)
     model.load_state_dict(torch.load(os.path.join(C.CHECKPOINT_DIR, f"{args.student}.pth"),
                                      map_location=device))
     model.eval()

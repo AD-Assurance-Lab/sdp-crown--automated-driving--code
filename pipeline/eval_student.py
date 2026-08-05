@@ -30,25 +30,7 @@ SPAWNS = {"eastbound": C.SPAWN_EASTBOUND, "westbound": C.SPAWN_WESTBOUND}
 
 
 def set_weather(world, name):
-    """Apply a CARLA weather preset. 'clear' matches the training weather."""
-    if name == "clear":
-        env.set_clear_weather(world)
-        return
-    w = world.get_weather()
-    if name == "fog":
-        w.cloudiness, w.fog_density, w.fog_distance = 90.0, 70.0, 10.0
-        w.precipitation, w.wetness = 0.0, 0.0
-        w.sun_altitude_angle = 45.0
-    elif name == "rain":
-        w.cloudiness, w.precipitation, w.precipitation_deposits = 90.0, 85.0, 70.0
-        w.wetness, w.fog_density = 80.0, 5.0
-        w.sun_altitude_angle = 40.0
-    elif name == "night":
-        w.cloudiness, w.precipitation, w.fog_density = 30.0, 0.0, 0.0
-        w.sun_altitude_angle = -25.0   # sun below horizon
-    else:
-        raise ValueError(name)
-    world.set_weather(w)
+    env.set_weather(world, name)  # shared impl in carla_env (single source of presets)
 
 
 def drive(world, vehicle, img_queue, model, device, w, h, direction, max_steps,
@@ -99,6 +81,8 @@ def main():
     ap.add_argument("--student", required=True)
     ap.add_argument("--w", type=int, required=True)
     ap.add_argument("--h", type=int, required=True)
+    ap.add_argument("--channels", default="8,16,16", help="conv widths (must match the trained student)")
+    ap.add_argument("--fc", type=int, default=32, help="FC width (must match the trained student)")
     ap.add_argument("--weather", default="clear", choices=["clear", "fog", "rain", "night"])
     ap.add_argument("--affine", default="none", choices=["none", "acdc", "carla"],
                     help="apply affine weather eps (worst corner) in-loop on CLEAR weather")
@@ -114,7 +98,8 @@ def main():
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = StudentNet(args.h, args.w).to(device)
+    model = StudentNet(args.h, args.w, channels=tuple(int(x) for x in args.channels.split(",")),
+                       fc=args.fc).to(device)
     model.load_state_dict(torch.load(os.path.join(C.CHECKPOINT_DIR, f"{args.student}.pth"),
                                      map_location=device))
     model.eval()
